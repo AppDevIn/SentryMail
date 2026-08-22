@@ -119,3 +119,25 @@ In the app: **Add account** (opens your browser for Google sign-in) → **Sync n
 **Load search model** → **Index new emails** → use the search box to search your inbox by
 meaning rather than exact keywords. Emails with a `List-Unsubscribe` header show an
 **Unsubscribe** control in the detail pane.
+
+## Where this app keeps state outside the repo
+
+Nothing below is in the repository, so cloning or deleting the checkout neither provides nor
+removes any of it. All paths are scoped to the app identifier in `src-tauri/tauri.conf.json`
+(`com.emailclient.app`) - not global to your user account, but *also* not specific to this
+checkout: a fork that keeps the same identifier shares all of it.
+
+| Path (Linux) | What | Sensitive? |
+| --- | --- | --- |
+| `~/.config/com.emailclient.app/google_oauth_client.json` | Google OAuth client id/secret | Low - identifies the *app*, not you. Google treats desktop-client secrets as non-confidential; access is protected by PKCE. Still, don't publish it. |
+| `~/.local/share/com.emailclient.app/models/*.gguf` | Local Gemma + EmbeddingGemma weights | No. Several GB. |
+| `~/.local/share/com.emailclient.app/email-client.sqlite` | Synced mail bodies + triage results | **Yes - your actual email content.** |
+| OS keyring (`org.freedesktop.secrets`) | Gmail refresh tokens | **Yes - grants mail access.** Never written to disk by this app. |
+
+On macOS substitute `~/Library/Application Support/com.emailclient.app/`, on Windows
+`%APPDATA%\com.emailclient.app\`.
+
+To remove every trace of the app from a machine, delete both directories above and remove the
+account in-app first (Remove inbox revokes the Google grant and clears the keyring entry -
+deleting the directories alone leaves the token in your keyring and the grant live on Google's
+side).
