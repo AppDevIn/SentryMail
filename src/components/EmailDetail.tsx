@@ -2,6 +2,20 @@ import { useEffect, useMemo, useState } from "react";
 import type { EmailDto, LabelDto, LabelSuggestion, TriageResult } from "../types";
 import { api } from "../api";
 import { MetaTag, RiskPill, typeLabel } from "./Badge";
+import {
+  ArrowLeftIcon,
+  CheckIcon,
+  ChevronDownIcon,
+  MailIcon,
+  MailOpenIcon,
+  PlusIcon,
+  RefreshIcon,
+  ShieldAlertIcon,
+  ShieldCheckIcon,
+  ShieldIcon,
+  SparklesIcon,
+  UndoIcon,
+} from "./icons";
 import { MessageBody, renderPlainLines } from "./MessageBody";
 import { ThreadHistory, type ThreadItem } from "./ThreadHistory";
 import { UnsubscribeControl } from "./UnsubscribeControl";
@@ -63,14 +77,12 @@ function DraftPanel({ emailId, title, toneNote, initialText, verifyNote, modelRe
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [drafting, setDrafting] = useState(false);
-  const [aiUsed, setAiUsed] = useState(false);
   const [guidance, setGuidance] = useState("");
 
   useEffect(() => {
     setText(initialText);
     setSaved(false);
     setError(null);
-    setAiUsed(false);
   }, [emailId, initialText]);
 
   const save = async () => {
@@ -93,7 +105,6 @@ function DraftPanel({ emailId, title, toneNote, initialText, verifyNote, modelRe
     try {
       // Redrafting sends the current text so "shorter" / "more formal" revise it, not restart.
       setText(await onDraftWithAi(emailId, guidance, text.trim() ? text : undefined));
-      setAiUsed(true);
       setSaved(false);
     } catch (e) {
       setError(String(e));
@@ -102,27 +113,23 @@ function DraftPanel({ emailId, title, toneNote, initialText, verifyNote, modelRe
     }
   };
 
-  const status = saved
-    ? "SAVED TO GMAIL DRAFTS · NOT SENT"
-    : aiUsed || initialText
-      ? "NOT SENT"
-      : "NOT SENT";
+  const status = saved ? "Saved to Gmail drafts · not sent" : "Not sent";
 
   return (
     <section className="draft sm-fade">
       <div className="draft-head">
-        <span className="mono draft-title">{title}</span>
+        <span className="draft-title">{title}</span>
         {otherRecipients.length > 0 && (
-          <label className="mono reply-all">
+          <label className="reply-all">
             <input type="checkbox" checked={replyAll} onChange={(e) => setReplyAll(e.currentTarget.checked)} />
-            REPLY ALL · +{otherRecipients.length} {otherRecipients.length === 1 ? "RECIPIENT" : "RECIPIENTS"}
+            Reply all · +{otherRecipients.length} {otherRecipients.length === 1 ? "recipient" : "recipients"}
           </label>
         )}
-        <span className="mono draft-tone">{toneNote}</span>
+        <span className="draft-tone">{toneNote}</span>
       </div>
       {drafting ? (
         <div className="ai-card-running">
-          <p className="mono processing sm-pulse">DRAFTING LOCALLY…</p>
+          <p className="processing sm-pulse">Drafting locally…</p>
           <div className="skeleton">
             <span className="skeleton-bar sm-sweep" style={{ width: "38%" }} />
             <span className="skeleton-bar sm-sweep" style={{ width: "88%" }} />
@@ -143,7 +150,7 @@ function DraftPanel({ emailId, title, toneNote, initialText, verifyNote, modelRe
       )}
       {verifyNote && (
         <p className="verify-note">
-          <span className="mono">VERIFY FIRST</span> {verifyNote}
+          <span className="verify-label">Verify first</span> {verifyNote}
         </p>
       )}
       {onDraftWithAi && (
@@ -154,7 +161,7 @@ function DraftPanel({ emailId, title, toneNote, initialText, verifyNote, modelRe
             if (!drafting && modelReady) void draftWithAi();
           }}
         >
-          <span className="mono guidance-label">INSTRUCTIONS</span>
+          <span className="guidance-label">Instructions</span>
           <input
             type="text"
             value={guidance}
@@ -163,7 +170,7 @@ function DraftPanel({ emailId, title, toneNote, initialText, verifyNote, modelRe
             placeholder="e.g. decline politely · keep it to two lines · say I'm free Thursday · more formal"
             aria-label="Instructions for the AI draft"
           />
-          <span className="mono guidance-hint">ENTER = {text.trim() ? "REDRAFT" : "DRAFT"}</span>
+          <span className="guidance-hint">Enter to {text.trim() ? "redraft" : "draft"}</span>
         </form>
       )}
       {error && <p className="inline-error">{error}</p>}
@@ -201,11 +208,11 @@ function DraftPanel({ emailId, title, toneNote, initialText, verifyNote, modelRe
           </button>
         )}
         {saved && (
-          <button type="button" className="btn btn-mini mono" onClick={() => void api.openExternal(GMAIL_DRAFTS_URL)}>
-            OPEN GMAIL TO SEND
+          <button type="button" className="btn btn-mini" onClick={() => void api.openExternal(GMAIL_DRAFTS_URL)}>
+            Open Gmail to send
           </button>
         )}
-        <span className="mono draft-status">{status}</span>
+        <span className="draft-status">{status}</span>
       </div>
     </section>
   );
@@ -390,72 +397,147 @@ export function EmailDetail({
   const youLabel = (r: { name: string; address: string | null }) =>
     r.address && userEmail && r.address.toLowerCase() === userEmail.toLowerCase() ? "you" : r.name;
 
+  const isReadNow = email.is_read && email.thread_unread === 0;
+
   return (
     <article className={`reading sm-fade ${isDanger ? "reading-danger" : ""}`}>
       {isDanger && (
         <div className="danger-banner" role="alert">
-          <span className="mono danger-banner-title">
-            DANGER — {triage!.type === "scam_risk" ? "LIKELY SCAM" : typeLabel(triage!.type).toUpperCase()}
+          <ShieldAlertIcon className="danger-banner-icon" />
+          <span className="danger-banner-title">
+            Danger · {triage!.type === "scam_risk" ? "likely scam" : typeLabel(triage!.type).toLowerCase()}
           </span>
-          <span className="mono danger-banner-note">LINKS AND REPLY DISABLED · DO NOT ACT ON THIS EMAIL</span>
+          <span className="danger-banner-note">Links and reply are disabled. Do not act on this email.</span>
         </div>
       )}
 
-      <div className="reading-body">
-        <button type="button" className="mono back-link" onClick={onBack}>
-          ← BACK TO INBOX
+      <div className="reading-toolbar" role="toolbar" aria-label="Email actions">
+        <button type="button" className="tb-btn tb-back" onClick={onBack} title="Back to inbox (Esc)">
+          <ArrowLeftIcon />
+          Inbox
         </button>
-
-        <header className="reading-header">
-          <h2 className="reading-subject">{email.subject || "(no subject)"}</h2>
-          <div className="reading-meta">
-            <span className="reading-sender">{sender.name}</span>
-            {sender.address && sender.address !== sender.name && (
-              <span className={`mono reading-address ${isDanger && signals.includes("sender_mismatch") ? "is-spoofed" : ""}`}>
-                {sender.address}
-              </span>
-            )}
-            <span className="mono reading-time">{formatFullTime(email.received_at)}</span>
+        <span className="tb-sep" aria-hidden="true" />
+        <div className="tb-group">
+          <button
+            type="button"
+            className="tb-btn"
+            title={isReadNow ? "Mark as unread" : "Mark as read"}
+            onClick={() => onToggleRead(email.id, !email.is_read)}
+          >
+            {isReadNow ? <MailIcon /> : <MailOpenIcon />}
+            {isReadNow ? "Mark unread" : "Mark read"}
+          </button>
+          {ok &&
+            (!triage!.done ? (
+              <button type="button" className="tb-btn" disabled={verdictBusy} onClick={() => void setDoneSafely(true)}>
+                <CheckIcon />
+                Mark done
+              </button>
+            ) : (
+              <button type="button" className="tb-btn" disabled={verdictBusy} onClick={() => void setDoneSafely(false)}>
+                <UndoIcon />
+                Reopen
+              </button>
+            ))}
+          {ok && (
             <button
               type="button"
-              className="mono read-toggle"
-              title={email.is_read ? "Mark as unread" : "Mark as read"}
-              onClick={() => onToggleRead(email.id, !email.is_read)}
+              className="tb-btn"
+              disabled={!modelReady || verdictBusy || analyzing}
+              title={modelReady ? "Run the on-device analysis again" : "Load the triage model first"}
+              onClick={() => onAnalyze(email.id)}
             >
-              {email.is_read && email.thread_unread === 0 ? "MARK UNREAD" : "MARK READ"}
+              <RefreshIcon />
+              Re-analyze
             </button>
+          )}
+        </div>
+        <span className="tb-spacer" />
+        {ok && (
+          <div className={`tb-group tb-security ${risk === "danger" ? "is-danger" : risk === "caution" ? "is-caution" : ""}`} aria-label="Security verdict">
+            <span className="tb-group-label">
+              <ShieldIcon />
+              Verdict
+            </span>
+            {risk !== "safe" && (
+              <button type="button" className="tb-btn" disabled={verdictBusy} onClick={() => void setVerdict("safe")}>
+                <ShieldCheckIcon />
+                Not a threat
+              </button>
+            )}
+            {risk === "safe" && (
+              <button type="button" className="tb-btn" disabled={verdictBusy} onClick={() => void setVerdict("caution")}>
+                <ShieldAlertIcon />
+                Flag as suspicious
+              </button>
+            )}
+            {risk !== "danger" && (
+              <button type="button" className="tb-btn tb-btn-danger" disabled={verdictBusy} onClick={() => void setVerdict("danger")}>
+                <ShieldAlertIcon />
+                Mark danger
+              </button>
+            )}
+            {triage!.user_risk && (
+              <button type="button" className="tb-btn" disabled={verdictBusy} title="Go back to the model's verdict" onClick={() => void setVerdict(null)}>
+                <UndoIcon />
+                Reset
+              </button>
+            )}
           </div>
-          {ok && (
-            <div className="header-chips">
-              {risk !== "safe" && <RiskPill risk={risk!} />}
-              {overridden && <MetaTag>YOUR CALL · WAS {triage!.risk.toUpperCase()}</MetaTag>}
-              {triage!.type === "action_needed" && !triage!.done && <MetaTag tone="urgent">NEEDS ACTION</MetaTag>}
-              {triage!.type !== "action_needed" && <MetaTag>{typeLabel(triage!.type).toUpperCase()}</MetaTag>}
-              {triage!.priority === "high" && <MetaTag tone="urgent">HIGH PRIORITY</MetaTag>}
-              {triage!.done && <MetaTag tone="accent">DONE</MetaTag>}
-            </div>
-          )}
-          {(toList.length > 0 || ccList.length > 0) && (
-            <div className="recipients">
-              {toList.length > 0 && (
-                <span className="recipients-group">
-                  <span className="mono recipients-label">TO</span>
-                  <span className="recipients-names">{toList.map(youLabel).join(", ")}</span>
-                </span>
+        )}
+      </div>
+
+      <div className="reading-body">
+        <header className="reading-header">
+          <h2 className="reading-subject">{email.subject || "(no subject)"}</h2>
+
+          <div className="reading-from">
+            <div className="reading-from-lines">
+              <div className="reading-from-line">
+                <span className="reading-sender">{sender.name}</span>
+                {sender.address && sender.address !== sender.name && (
+                  <span className={`reading-address ${isDanger && signals.includes("sender_mismatch") ? "is-spoofed" : ""}`}>
+                    {sender.address}
+                  </span>
+                )}
+                {ok && (
+                  <span className="reading-badges">
+                    {risk !== "safe" && <RiskPill risk={risk!} />}
+                    {triage!.type === "action_needed" && !triage!.done && <MetaTag tone="urgent">Needs action</MetaTag>}
+                    {triage!.type !== "action_needed" && <MetaTag>{typeLabel(triage!.type)}</MetaTag>}
+                    {triage!.priority === "high" && <MetaTag tone="urgent">High priority</MetaTag>}
+                    {triage!.done && <MetaTag tone="accent">Done</MetaTag>}
+                    {overridden && <MetaTag>Your call · was {triage!.risk}</MetaTag>}
+                  </span>
+                )}
+                <time className="reading-time" dateTime={email.received_at}>
+                  {formatFullTime(email.received_at)}
+                </time>
+              </div>
+              {(toList.length > 0 || ccList.length > 0) && (
+                <div className="reading-from-line reading-to">
+                  {toList.length > 0 && (
+                    <span className="recipients-group">
+                      <span className="field-label">To</span>
+                      <span className="recipients-names">{toList.map(youLabel).join(", ")}</span>
+                    </span>
+                  )}
+                  {ccList.length > 0 && (
+                    <span className="recipients-group">
+                      <span className="field-label">Cc</span>
+                      <span className="recipients-names">{ccList.map(youLabel).join(", ")}</span>
+                    </span>
+                  )}
+                  {addressing === "cc" && <MetaTag tone="caution">You're cc'd</MetaTag>}
+                  {addressing === "none" && <MetaTag>Not addressed to you</MetaTag>}
+                </div>
               )}
-              {ccList.length > 0 && (
-                <span className="recipients-group">
-                  <span className="mono recipients-label">CC</span>
-                  <span className="recipients-names">{ccList.map(youLabel).join(", ")}</span>
-                </span>
-              )}
-              {addressing === "cc" && <MetaTag tone="caution">YOU'RE CC'D</MetaTag>}
-              {addressing === "none" && <MetaTag>NOT ADDRESSED TO YOU</MetaTag>}
             </div>
-          )}
+          </div>
+
           {labels.length > 0 && (
             <div className="labels-row">
-              <span className="mono recipients-label">LABELS</span>
+              <span className="field-label">Labels</span>
               {applied.map((l) => (
                 <span key={l.id} className="label-chip label-chip-lg" style={{ background: l.color_bg ?? undefined, color: l.color_fg ?? undefined }}>
                   {l.name}
@@ -483,20 +565,22 @@ export function EmailDetail({
                 </button>
               ))}
               {suggestions && suggestions.filter((s) => !email.label_ids.includes(s.gmail_label_id)).length === 0 && (
-                <span className="mono label-note">NO MATCHING LABEL</span>
+                <span className="label-note">No matching label</span>
               )}
               <button
                 type="button"
-                className="mono verdict-btn is-accent"
+                className="link-action is-accent"
                 disabled={labelBusy || !modelReady}
                 title={modelReady ? "Ask the on-device model which of your described labels fit" : "Load the triage model first"}
                 onClick={() => void runLabels(async () => setSuggestions(await onSuggestLabels(email.id)))}
               >
-                {labelBusy ? "THINKING…" : suggestions ? "SUGGEST AGAIN" : "SUGGEST LABELS"}
+                <SparklesIcon />
+                {labelBusy ? "Thinking…" : suggestions ? "Suggest again" : "Suggest labels"}
               </button>
               <span className="label-picker">
-                <button type="button" className="mono verdict-btn" disabled={labelBusy} onClick={() => setPickerOpen((o) => !o)}>
-                  + ADD LABEL
+                <button type="button" className="link-action" disabled={labelBusy} onClick={() => setPickerOpen((o) => !o)}>
+                  <PlusIcon />
+                  Add label
                 </button>
                 {pickerOpen && (
                   <ul className="label-picker-menu sm-fade">
@@ -525,106 +609,90 @@ export function EmailDetail({
           <UnsubscribeControl emailId={email.id} />
         </header>
 
-        <section className={`gist gist-${risk ?? "none"}`} aria-live="polite">
-          {analyzing && <p className="mono gist-status sm-pulse">ANALYZING…</p>}
+        <section className={`summary-card summary-${risk ?? "none"}`} aria-live="polite">
+          <span className="summary-icon" aria-hidden="true">
+            {analyzing ? <SparklesIcon className="sm-pulse" /> : isDanger ? <ShieldAlertIcon /> : <SparklesIcon />}
+          </span>
+          <div className="summary-content">
+            <div className="summary-head">
+              <span className="summary-label">Summary</span>
+              <span className="summary-meta">
+                {analyzing ? "Analyzing on-device…" : ok ? "On-device" : modelReady ? "Not analyzed" : "Analysis off"}
+              </span>
+            </div>
 
-          {!analyzing && !triage && (
-            <p className="gist-status-line">
-              {modelReady ? (
-                <>
-                  <span className="gist-muted">Not analyzed yet.</span>
-                  <button type="button" className="mono verdict-btn is-accent" onClick={() => onAnalyze(email.id)}>
-                    {analysisError ? "RETRY" : "ANALYZE"}
-                  </button>
-                  {analysisError && <span className="inline-error">{analysisError}</span>}
-                </>
-              ) : (
-                <>
-                  <span className="gist-muted">Analysis is off.</span>
-                  <button type="button" className="mono verdict-btn is-accent" onClick={onOpenSettings}>
-                    TURN ON IN SETTINGS
-                  </button>
-                </>
-              )}
-            </p>
-          )}
-
-          {!analyzing && triage && !ok && (
-            <p className="gist-status-line">
-              <span className="gist-muted">Analysis didn't produce a readable result.</span>
-              <button type="button" className="mono verdict-btn is-accent" disabled={!modelReady} onClick={() => onAnalyze(email.id)}>
-                RETRY
-              </button>
-            </p>
-          )}
-
-          {!analyzing && triage && ok && (
-            <div className="gist-body sm-fade">
-              <p className="gist-summary">{triage.summary}</p>
-              {risk !== "safe" && <p className="gist-why">{triage.risk_explanation}</p>}
-              {signals.length > 0 && (
-                <div className="signals">
-                  <button type="button" className="mono signals-toggle" aria-expanded={signalsOpen} onClick={() => setSignalsOpen((o) => !o)}>
-                    {signals.length} {signals.length === 1 ? "WARNING SIGN" : "WARNING SIGNS"} — {signalsOpen ? "HIDE" : "SHOW"}
-                  </button>
-                  {signalsOpen && (
-                    <ul className="signal-list sm-fade">
-                      {signals.map((s) => (
-                        <li key={s}>
-                          <span className={`mono signal-tag signal-tag-${risk}`}>{signalLabel(s)}</span>
-                          <span className="signal-desc">{SIGNAL_INFO[s]?.description ?? ""}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
-              )}
-              <div className="gist-actions">
-                {!triage.done ? (
-                  <button type="button" className="mono verdict-btn" disabled={verdictBusy} onClick={() => void setDoneSafely(true)}>
-                    MARK DONE
-                  </button>
+            {!analyzing && !triage && (
+              <div className="summary-status">
+                {modelReady ? (
+                  <>
+                    <span className="summary-muted">This email hasn't been analyzed yet.</span>
+                    <button type="button" className="btn btn-mini" onClick={() => onAnalyze(email.id)}>
+                      {analysisError ? "Retry" : "Analyze"}
+                    </button>
+                    {analysisError && <span className="inline-error">{analysisError}</span>}
+                  </>
                 ) : (
-                  <button type="button" className="mono verdict-btn" disabled={verdictBusy} onClick={() => void setDoneSafely(false)}>
-                    REOPEN
-                  </button>
+                  <>
+                    <span className="summary-muted">Turn on analysis to get a summary and a risk check.</span>
+                    <button type="button" className="btn btn-mini" onClick={onOpenSettings}>
+                      Open settings
+                    </button>
+                  </>
                 )}
-                {risk !== "safe" && (
-                  <button type="button" className="mono verdict-btn" disabled={verdictBusy} onClick={() => void setVerdict("safe")}>
-                    NOT A THREAT
-                  </button>
-                )}
-                {risk === "safe" && (
-                  <button type="button" className="mono verdict-btn" disabled={verdictBusy} onClick={() => void setVerdict("caution")}>
-                    FLAG AS SUSPICIOUS
-                  </button>
-                )}
-                {risk !== "danger" && (
-                  <button type="button" className="mono verdict-btn verdict-btn-danger" disabled={verdictBusy} onClick={() => void setVerdict("danger")}>
-                    MARK DANGER
-                  </button>
-                )}
-                {triage.user_risk && (
-                  <button type="button" className="mono verdict-btn" disabled={verdictBusy} onClick={() => void setVerdict(null)}>
-                    RESET
-                  </button>
-                )}
-                <button type="button" className="mono verdict-btn" disabled={!modelReady || verdictBusy} title="Analyze again" onClick={() => onAnalyze(email.id)}>
-                  RE-ANALYZE
+              </div>
+            )}
+
+            {!analyzing && triage && !ok && (
+              <div className="summary-status">
+                <span className="summary-muted">Analysis didn't produce a readable result.</span>
+                <button type="button" className="btn btn-mini" disabled={!modelReady} onClick={() => onAnalyze(email.id)}>
+                  Retry
                 </button>
               </div>
-              {verdictError && <p className="inline-error">{verdictError}</p>}
-            </div>
-          )}
+            )}
+
+            {analyzing && (
+              <div className="skeleton">
+                <span className="skeleton-bar sm-sweep" style={{ width: "62%" }} />
+                <span className="skeleton-bar sm-sweep" style={{ width: "38%" }} />
+              </div>
+            )}
+
+            {!analyzing && triage && ok && (
+              <div className="summary-body sm-fade">
+                <p className="summary-text">{triage.summary}</p>
+                {risk !== "safe" && <p className="summary-why">{triage.risk_explanation}</p>}
+                {signals.length > 0 && (
+                  <div className="signals">
+                    <button type="button" className="link-action" aria-expanded={signalsOpen} onClick={() => setSignalsOpen((o) => !o)}>
+                      <ChevronDownIcon className={`chev ${signalsOpen ? "is-open" : ""}`} />
+                      {signalsOpen ? "Hide" : "Show"} {signals.length} {signals.length === 1 ? "warning sign" : "warning signs"}
+                    </button>
+                    {signalsOpen && (
+                      <ul className="signal-list sm-fade">
+                        {signals.map((s) => (
+                          <li key={s}>
+                            <span className={`signal-tag signal-tag-${risk}`}>{signalLabel(s)}</span>
+                            <span className="signal-desc">{SIGNAL_INFO[s]?.description ?? ""}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                )}
+                {verdictError && <p className="inline-error">{verdictError}</p>}
+              </div>
+            )}
+          </div>
         </section>
 
         {!analyzing && ok && isDanger && (
           <section className="action-panel action-panel-danger">
-            <div className="mono action-title">WHAT TO DO</div>
+            <div className="action-title">What to do</div>
             <p className="action-copy">
               {triage!.next_step_warning ?? "Don't click links or reply. Contact the sender through a channel you already trust."}
             </p>
-            <div className="mono action-foot">REPLY DISABLED FOR THIS EMAIL</div>
+            <div className="action-foot">Reply is disabled for this email.</div>
           </section>
         )}
 
@@ -633,8 +701,8 @@ export function EmailDetail({
         {!analyzing && showAiDraft && (
           <DraftPanel
             emailId={email.id}
-            title="SUGGESTED REPLY"
-            toneNote={`TONE: ${risk === "caution" ? "CAUTIOUS · VERIFY-FIRST" : "MATCHED TO THREAD"} · EDITABLE`}
+            title="Suggested reply"
+            toneNote={`Tone: ${risk === "caution" ? "cautious, verify first" : "matched to thread"} · editable`}
             initialText={triage!.draft_reply ?? ""}
             verifyNote={risk === "caution" ? triage!.next_step_warning : null}
             modelReady={modelReady}
@@ -650,17 +718,15 @@ export function EmailDetail({
             <button type="button" className="btn" onClick={() => setReplyOpen(true)}>
               Reply
             </button>
-            <span className="mono reply-cta-note">
-              {addressing === "cc" ? "YOU WERE CC'D · NO REPLY EXPECTED" : ""}
-            </span>
+            <span className="reply-cta-note">{addressing === "cc" ? "You were cc'd · no reply expected" : ""}</span>
           </div>
         )}
 
         {!analyzing && !showAiDraft && canReply && replyOpen && (
           <DraftPanel
             emailId={email.id}
-            title="YOUR REPLY"
-            toneNote={addressing === "cc" ? "YOU WERE CC'D · OPTIONAL" : "EDITABLE"}
+            title="Your reply"
+            toneNote={addressing === "cc" ? "You were cc'd · optional" : "Editable"}
             initialText=""
             verifyNote={risk === "caution" && triage?.next_step_warning ? triage.next_step_warning : null}
             modelReady={modelReady}
