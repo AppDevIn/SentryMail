@@ -54,3 +54,14 @@ hex ::= [0-9a-fA-F]
 string ::= "\"" char* "\""
 "#;
 pub const MEETING_GRAMMAR_ROOT: &str = "root";
+
+/// GBNF grammar for interpreting a spoken command: one intent from a fixed list plus a free-text
+/// query (search words, a position, or a sender/topic). Mirrors `ModelIntent` in src/voice.ts.
+pub const VOICE_GBNF: &str = r#"root ::= "{" ws "\"intent\":" ws intent ws "," ws "\"query\":" ws string ws "}"
+intent ::= "\"read\"" | "\"read_summary\"" | "\"read_details\"" | "\"stop\"" | "\"reply\"" | "\"back\"" | "\"settings\"" | "\"mark_read\"" | "\"mark_unread\"" | "\"done\"" | "\"reopen\"" | "\"search\"" | "\"clear_search\"" | "\"open_number\"" | "\"open_match\"" | "\"next\"" | "\"previous\"" | "\"sync\"" | "\"quarantine\"" | "\"inbox\"" | "\"help\"" | "\"unknown\""
+ws ::= [ \t\n]*
+char ::= [^"\\] | "\\" (["\\/bfnrt] | "u" hex hex hex hex)
+hex ::= [0-9a-fA-F]
+string ::= "\"" char* "\""
+"#;
+pub const VOICE_GRAMMAR_ROOT: &str = "root";

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AttachmentDto, EmailDto, LabelDto, LabelSuggestion, Risk, TriageResult } from "../types";
 import { api } from "../api";
 import { MetaTag, typeLabel } from "./Badge";
@@ -6,6 +6,8 @@ import { ChevronDownIcon, PlusIcon, ShieldAlertIcon, SparklesIcon } from "./icon
 import { MessageBody, renderPlainLines } from "./MessageBody";
 import { ThreadHistory, type ThreadItem } from "./ThreadHistory";
 import { UnsubscribeControl } from "./UnsubscribeControl";
+import { DictateButton, ReadAloudButton } from "./VoiceControls";
+import { appendDictation, describeEmailForSpeech, speak, stopSpeaking, type ReadPart } from "../voice";
 import {
   SIGNAL_INFO,
   addressingFor,
@@ -44,6 +46,14 @@ interface EmailDetailProps {
   onPreviewAttachment: (attachment: AttachmentDto) => void;
   /** True while the attachment preview covers this view: keeps Escape from reaching the inbox. */
   suspended: boolean;
+  /** Bumped by the app when a spoken command asks to read this email aloud. */
+  readAloudSignal?: number;
+  /** Which part the spoken command asked for (message, summary, or details). */
+  readAloudPart?: ReadPart;
+  /** Bumped by the app when a spoken command asks to open the reply box. */
+  replySignal?: number;
+  /** What the spoken command asked the reply to say (instructions for the on-device drafter), if anything. */
+  replyInstructions?: string | null;
 }
 
 /** UI word for a risk value: "clean" for safe (ADR 0012). */
@@ -65,6 +75,8 @@ interface DraftPanelProps {
   onSend: (emailId: number, body: string, replyAll: boolean) => Promise<void>;
   onDraftWithAi: ((emailId: number, instructions?: string, previousDraft?: string) => Promise<string>) | null;
   onClose: () => void;
+  /** A spoken "reply saying …": fills the instructions box and asks the on-device model to draft from it. */
+  spoken?: { seq: number; instructions: string } | null;
 }
 
 function DraftPanel({
@@ -79,6 +91,7 @@ function DraftPanel({
   onSend,
   onDraftWithAi,
   onClose,
+  spoken = null,
 }: DraftPanelProps) {
   const [text, setText] = useState(initialText);
   const [replyAll, setReplyAll] = useState(replyAllDefault && otherRecipients.length > 0);
@@ -87,7 +100,13 @@ function DraftPanel({
   const [error, setError] = useState<string | null>(null);
   const [drafting, setDrafting] = useState(false);
   const [guidance, setGuidance] = useState("");
+  const [dictating, setDictating] = useState(false);
+  const [interim, setInterim] = useState("");
   const areaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Dictation appends to whatever is in the box, so you can type a bit, speak a bit, and fix by hand.
+  const onDictated = useCallback((piece: string) => setText((prev) => appendDictation(prev, piece)), []);
+  const onGuidanceDictated = useCallback((piece: string) => setGuidance((prev) => appendDictation(prev, piece)), []);
 
   useEffect(() => {
     setText(initialText);
@@ -112,13 +131,13 @@ function DraftPanel({
     }
   };
 
-  const draftWithAi = async () => {
+  const draftWithAi = async (instructions: string = guidance, previous: string | undefined = text.trim() ? text : undefined) => {
     if (!onDraftWithAi) return;
     setDrafting(true);
     setError(null);
     try {
       // Redrafting sends the current text so "shorter" / "more formal" revise it, not restart.
-      setText(await onDraftWithAi(emailId, guidance, text.trim() ? text : undefined));
+      setText(await onDraftWithAi(emailId, instructions, previous));
       setSent(false);
       // The instruction has been applied; clear it so the next Enter starts from a blank prompt.
       setGuidance("");
@@ -128,6 +147,17 @@ function DraftPanel({
       setDrafting(false);
     }
   };
+
+  // Spoken "reply saying …": the words are the brief for the on-device model. Without the model,
+  // they're at least put into the instructions box so nothing is lost.
+  const seenSpoken = useRef<number | null>(null);
+  useEffect(() => {
+    if (!spoken || spoken.seq === seenSpoken.current) return;
+    seenSpoken.current = spoken.seq;
+    setGuidance(spoken.instructions);
+    if (onDraftWithAi && modelReady) void draftWithAi(spoken.instructions, text.trim() ? text : undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [spoken]);
 
   if (sent) {
     return (
@@ -167,16 +197,24 @@ function DraftPanel({
           </div>
         </div>
       ) : (
-        <textarea
-          ref={areaRef}
-          value={text}
-          onChange={(e) => {
-            setText(e.currentTarget.value);
-          }}
-          rows={8}
-          placeholder="Write your reply, or let the on-device model draft one."
-          aria-label="Reply"
-        />
+        <div className={`draft-editor ${dictating ? "is-dictating" : ""}`}>
+          <textarea
+            ref={areaRef}
+            value={text}
+            onChange={(e) => {
+              setText(e.currentTarget.value);
+            }}
+            rows={8}
+            placeholder="Write your reply, speak it with Dictate, or let the on-device model draft one."
+            aria-label="Reply"
+          />
+          {dictating && (
+            <div className="draft-dictation-bar sm-fade" role="status" aria-live="polite">
+              <span className="dictate-live-label">Listening…</span>
+              <span className="dictate-interim">{interim || "Speak your reply. Say “new line” or “full stop” for punctuation."}</span>
+            </div>
+          )}
+        </div>
       )}
       {verifyNote && (
         <p className="verify-note">
@@ -200,6 +238,7 @@ function DraftPanel({
             placeholder="e.g. decline politely · keep it to two lines · say I'm free Thursday · more formal"
             aria-label="Instructions for the AI draft"
           />
+          <DictateButton compact onText={onGuidanceDictated} disabled={drafting} label="Dictate instructions" />
           <span className="guidance-hint">Enter to {text.trim() ? "redraft" : "draft"}</span>
         </form>
       )}
@@ -208,13 +247,21 @@ function DraftPanel({
         <button type="button" className="btn btn-accent" disabled={sending || drafting || !text.trim()} onClick={send}>
           {sending ? "Sending…" : "Send"}
         </button>
+        <DictateButton
+          onText={onDictated}
+          disabled={drafting || sending}
+          showStatus={false}
+          onInterim={setInterim}
+          onListeningChange={setDictating}
+          className="draft-dictate"
+        />
         {onDraftWithAi && (
           <button
             type="button"
             className="btn"
             disabled={drafting || sending || !modelReady}
             title={modelReady ? "Ask the on-device model for a draft" : "Load the triage model first"}
-            onClick={draftWithAi}
+            onClick={() => void draftWithAi()}
           >
             {text.trim() ? "Redraft" : "Write a draft"}
           </button>
@@ -256,6 +303,10 @@ export function EmailDetail({
   onDraftWithAi,
   onPreviewAttachment,
   suspended,
+  readAloudSignal = 0,
+  readAloudPart = "body",
+  replySignal = 0,
+  replyInstructions = null,
 }: EmailDetailProps) {
   const [labelBusy, setLabelBusy] = useState(false);
   const [labelError, setLabelError] = useState<string | null>(null);
@@ -304,11 +355,36 @@ export function EmailDetail({
   }, [verdictOpen]);
 
   const [reply, setReply] = useState<null | { all: boolean; suggested: boolean }>(null);
+  const [spoken, setSpoken] = useState<{ seq: number; instructions: string } | null>(null);
   useEffect(() => {
     setReply(null);
     setVerdictOpen(false);
     setActionError(null);
   }, [email.id]);
+
+  // Leaving this email (or the view) stops any read-aloud in progress.
+  useEffect(() => () => stopSpeaking(), [email.id]);
+
+  // Spoken commands arrive as counters. The view is remounted per email (keyed by id in App.tsx),
+  // so only a change *after* mount counts - otherwise opening the next email would re-run the last command.
+  const seenRead = useRef(readAloudSignal);
+  useEffect(() => {
+    if (readAloudSignal === seenRead.current) return;
+    seenRead.current = readAloudSignal;
+    speak(describeEmailForSpeech(email, triage, readAloudPart));
+    // Only the signal should trigger a read; email/triage/part are read at that moment.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [readAloudSignal]);
+
+  const seenReply = useRef(replySignal);
+  useEffect(() => {
+    if (replySignal === seenReply.current) return;
+    seenReply.current = replySignal;
+    setReply((prev) => prev ?? { all: false, suggested: showAiDraft });
+    if (replyInstructions) setSpoken({ seq: replySignal, instructions: replyInstructions });
+    // replyInstructions/showAiDraft are read at the moment the signal fires.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [replySignal]);
 
   // Escape closes the reading pane (unless focus is in a field, where Esc just blurs it).
   // While the attachment preview is up it owns Escape, so this listener stands down - otherwise
@@ -475,6 +551,7 @@ export function EmailDetail({
         >
           {triage ? "Re-analyze" : "Analyze"}
         </button>
+        <ReadAloudButton text={() => describeEmailForSpeech(email, triage)} />
         <span className="tb-spacer" />
         <div className={`verdict ${risk ? `verdict-${risk}` : ""}`} ref={verdictRef}>
           <button
@@ -751,6 +828,7 @@ export function EmailDetail({
             onSend={onSendReply}
             onDraftWithAi={onDraftWithAi}
             onClose={() => setReply(null)}
+            spoken={spoken}
           />
         )}
 

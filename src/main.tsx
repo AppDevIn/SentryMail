@@ -25,3 +25,8 @@ if (import.meta.env.DEV && new URLSearchParams(window.location.search).has("mock
 } else {
   boot();
 }
+
+// Dev-only: ?voicetest=1 runs the speech-engine probe (src/dev/voiceProbe.ts) over the live app.
+if (import.meta.env.DEV && new URLSearchParams(window.location.search).has("voicetest")) {
+  import("./dev/voiceProbe").then((m) => m.runVoiceProbe());
+}

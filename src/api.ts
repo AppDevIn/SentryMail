@@ -134,6 +134,9 @@ export const api = {
   unsubscribeViaMailto: (emailId: number) =>
     invoke<void>("unsubscribe_via_mailto", { emailId }),
 
+  /** Asks the on-device model which voice intent a phrase means (fallback for the local parser). */
+  interpretVoiceCommand: (transcript: string, emailOpen: boolean) =>
+    invoke<{ intent: string; query: string }>("interpret_voice_command", { transcript, emailOpen }),
   embeddingModelStatus: () => invoke<ModelStatus>("embedding_model_status"),
   loadEmbeddingModel: () => invoke<void>("load_embedding_model"),
   embedPending: (accountId?: number) =>

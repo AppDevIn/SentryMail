@@ -120,3 +120,38 @@ export const AlertIcon = (p: P) => (
     <path d="M12 17h.01" />
   </Svg>
 );
+
+export const MicIcon = (p: P) => (
+  <Svg {...p}>
+    <rect x="9" y="3" width="6" height="11" rx="3" />
+    <path d="M5 11a7 7 0 0 0 14 0" />
+    <path d="M12 18v3" />
+    <path d="M9 21h6" />
+  </Svg>
+);
+
+export const MicOffIcon = (p: P) => (
+  <Svg {...p}>
+    <path d="M9 9v2a3 3 0 0 0 5.1 2.1" />
+    <path d="M15 9.3V6a3 3 0 0 0-5.9-.7" />
+    <path d="M5 11a7 7 0 0 0 11.2 5.6" />
+    <path d="M19 11a7 7 0 0 1-.6 2.8" />
+    <path d="M12 18v3" />
+    <path d="M9 21h6" />
+    <path d="m3 3 18 18" />
+  </Svg>
+);
+
+export const SpeakerIcon = (p: P) => (
+  <Svg {...p}>
+    <path d="M11 5 6 9H3v6h3l5 4z" />
+    <path d="M15.5 8.5a5 5 0 0 1 0 7" />
+    <path d="M18.5 5.5a9 9 0 0 1 0 13" />
+  </Svg>
+);
+
+export const StopIcon = (p: P) => (
+  <Svg {...p}>
+    <rect x="6" y="6" width="12" height="12" rx="2" />
+  </Svg>
+);

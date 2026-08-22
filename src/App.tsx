@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { api } from "./api";
-import { effectiveRisk } from "./format";
+import { effectiveRisk, parseSender } from "./format";
 import type {
   AccountDto,
   ApiFolder,
@@ -28,6 +28,8 @@ import { Compose } from "./components/Compose";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { CalendarMonth } from "./components/CalendarMonth";
 import { AttachmentPreview } from "./components/AttachmentPreview";
+import { VoiceDock } from "./components/VoiceControls";
+import { VOICE_HELP, commandFromModelIntent, describeInboxForSpeech, speak, stopSpeaking, type ReadPart, type VoiceCommand } from "./voice";
 import "./App.css";
 
 const PAGE_SIZE = 100;
@@ -115,6 +117,11 @@ function App() {
   const loadedRef = useRef(0);
   const scopeWarned = useRef(false);
   const narrow = useNarrow();
+  // Spoken commands aimed at the open email are delivered as counters the detail view reacts to.
+  const [readAloudSignal, setReadAloudSignal] = useState(0);
+  const [readAloudPart, setReadAloudPart] = useState<ReadPart>("body");
+  const [replySignal, setReplySignal] = useState(0);
+  const [replyInstructions, setReplyInstructions] = useState<string | null>(null);
 
   /**
    * The folder value the API expects for the current view: label views ignore archiving
@@ -562,6 +569,132 @@ function App() {
   const showList = !narrow || pane.kind === "empty";
   const showPane = !narrow || pane.kind !== "empty";
 
+  // What "open number two" counts through: search hits when searching, else the loaded list.
+  const visibleIds: number[] = searchResults ? searchResults.map((r) => r.email_id) : emails.map((e) => e.id);
+
+  /** Runs one spoken command. Returns a short note for the toast, or null when it doesn't apply right now. */
+  const runVoiceCommand = (cmd: VoiceCommand): string | null | void => {
+    switch (cmd.kind) {
+      case "help":
+        speak(VOICE_HELP);
+        return VOICE_HELP;
+      case "stop":
+        stopSpeaking();
+        return;
+      case "back":
+        stopSpeaking();
+        if (pane.kind !== "empty") {
+          closePane();
+          return;
+        }
+        // Nothing open: "inbox"/"back" means the plain inbox list.
+        setFolder("inbox");
+        setSelectedLabelId(null);
+        clearSearch();
+        return "Showing the inbox";
+      case "settings":
+        setSettingsOpen(true);
+        return;
+      case "read":
+        if (selectedEmail) {
+          setReadAloudPart(cmd.part ?? "body");
+          setReadAloudSignal((n) => n + 1);
+          return cmd.part === "summary" ? "Here's the summary" : cmd.part === "details" ? "Here are the details" : "Reading this email";
+        }
+        speak(describeInboxForSpeech(viewTitle, emails, counts.unread));
+        return `Reading ${viewTitle}`;
+      case "reply":
+        if (!selectedEmail) return null;
+        if (effectiveRisk(selectedTriage) === "danger") return "Reply is disabled for a dangerous email.";
+        setReplyInstructions(cmd.instructions ?? null);
+        setReplySignal((n) => n + 1);
+        if (cmd.instructions) return modelReady ? `Drafting a reply that says: "${cmd.instructions}"` : `Opening a reply - turn on Analysis in Settings to have it drafted from "${cmd.instructions}"`;
+        return;
+      case "mark_read":
+        if (!selectedEmail) return null;
+        setRead(selectedEmail.id, cmd.read);
+        return;
+      case "done":
+        if (!selectedEmail || selectedTriage?.triage_status !== "ok") return null;
+        api
+          .setDone(selectedEmail.id, cmd.done)
+          .then(() => setTriageByEmail((prev) => (prev[selectedEmail.id] ? { ...prev, [selectedEmail.id]: { ...prev[selectedEmail.id], done: cmd.done } } : prev)))
+          .catch((e) => setError(String(e)));
+        return;
+      case "search":
+        stopSpeaking();
+        closePane();
+        setSearchInput(cmd.query);
+        void runSearch(cmd.query);
+        return;
+      case "clear_search":
+        clearSearch();
+        return;
+      case "sync":
+        void doSync();
+        return;
+      case "folder":
+        setFolder(cmd.folder);
+        setSelectedLabelId(null);
+        closePane();
+        clearSearch();
+        return;
+      case "open": {
+        if (visibleIds.length === 0) return `${viewTitle} is empty.`;
+        const idx = cmd.index < 0 ? visibleIds.length - 1 : cmd.index;
+        if (idx >= visibleIds.length) return `There are only ${visibleIds.length} emails in the list.`;
+        stopSpeaking();
+        openEmail(visibleIds[idx]);
+        if (cmd.thenRead) {
+          setReadAloudPart("body");
+          window.setTimeout(() => setReadAloudSignal((n) => n + 1), 400); // after the detail view mounts
+        }
+        return;
+      }
+      case "open_match": {
+        // Best visible match on sender name/address or subject: all query words present beats some.
+        const words = cmd.query.toLowerCase().split(/\s+/).filter((w) => w.length > 1);
+        if (words.length === 0) return null;
+        const candidates: EmailDto[] = searchResults
+          ? searchResults.map((r) => emails.find((e) => e.id === r.email_id) ?? extraEmails[r.email_id]).filter((e): e is EmailDto => !!e)
+          : emails;
+        let best: { id: number; score: number } | null = null;
+        for (const e of candidates) {
+          const sender = parseSender(e.sender);
+          const hay = `${sender.name} ${sender.address ?? ""} ${e.subject ?? ""}`.toLowerCase();
+          const score = words.filter((w) => hay.includes(w)).length;
+          if (score > 0 && (!best || score > best.score)) best = { id: e.id, score };
+        }
+        if (!best) {
+          // Not on screen: fall back to a search for it.
+          closePane();
+          setSearchInput(cmd.query);
+          void runSearch(cmd.query);
+          return `Nothing on screen matches "${cmd.query}" - searching instead`;
+        }
+        stopSpeaking();
+        openEmail(best.id);
+        if (cmd.thenRead) {
+          setReadAloudPart("body");
+          window.setTimeout(() => setReadAloudSignal((n) => n + 1), 400);
+        }
+        return;
+      }
+      case "next":
+      case "prev": {
+        if (!selectedEmailId) return null;
+        const at = visibleIds.indexOf(selectedEmailId);
+        if (at < 0) return null;
+        const to = cmd.kind === "next" ? at + 1 : at - 1;
+        if (to < 0) return "This is the newest email.";
+        if (to >= visibleIds.length) return "This is the last email in the list.";
+        stopSpeaking();
+        openEmail(visibleIds[to]);
+        return;
+      }
+    }
+  };
+
   return (
     <div className={`app-shell ${narrow ? "is-narrow" : ""}`}>
       <Sidebar
@@ -782,6 +915,10 @@ function App() {
                 onDraftWithAi={(emailId, instructions, previousDraft) => api.draftReply(emailId, instructions, previousDraft)}
                 onPreviewAttachment={(attachment) => setPreview({ emailId: selectedEmail.id, attachment })}
                 suspended={preview !== null}
+                readAloudSignal={readAloudSignal}
+                readAloudPart={readAloudPart}
+                replySignal={replySignal}
+                replyInstructions={replyInstructions}
               />
             ) : (
               <div className="pane-empty sm-fade">
@@ -800,6 +937,14 @@ function App() {
         )}
         </>
       )}
+      <VoiceDock
+        onCommand={runVoiceCommand}
+        interpret={
+          modelReady
+            ? (transcript) => api.interpretVoiceCommand(transcript, selectedEmail !== null).then(commandFromModelIntent)
+            : null
+        }
+      />
     </div>
   );
 }
