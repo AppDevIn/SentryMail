@@ -46,6 +46,12 @@ const EMPTY_FOLDER_COUNTS: FolderCounts = { inbox_total: 0, inbox_unread: 0, qua
 
 /** What the reading pane shows. */
 type Pane = { kind: "empty" } | { kind: "thread"; emailId: number } | { kind: "compose" };
+type MailScope = { accountId: number | null; labelId: string | null; folder: ApiFolder };
+
+const sameMailScope = (a: MailScope, b: MailScope) =>
+  a.accountId === b.accountId && a.labelId === b.labelId && a.folder === b.folder;
+
+const mailScopeKey = (scope: MailScope) => JSON.stringify([scope.accountId, scope.labelId, scope.folder]);
 
 function useNarrow(): boolean {
   const [narrow, setNarrow] = useState(() => window.innerWidth < NARROW_MAX_PX);
@@ -62,6 +68,8 @@ function useNarrow(): boolean {
 function App() {
   const [accounts, setAccounts] = useState<AccountDto[]>([]);
   const [selectedAccountId, setSelectedAccountId] = useState<number | null>(null);
+  const selectedAccountRef = useRef<number | null>(null);
+  selectedAccountRef.current = selectedAccountId;
   const [emails, setEmails] = useState<EmailDto[]>([]);
   const [counts, setCounts] = useState<EmailCounts>({ total: 0, unread: 0 });
   const [folderCounts, setFolderCounts] = useState<FolderCounts>(EMPTY_FOLDER_COUNTS);
@@ -119,6 +127,10 @@ function App() {
   const autoAnalyzed = useRef<Set<number>>(new Set());
   // How many rows are currently loaded, so refreshes keep the same depth.
   const loadedRef = useRef(0);
+  // Calendar is not a mail scope. Remember the last loaded scope so opening it and coming
+  // straight back can reuse the Inbox rows that are already in memory.
+  const loadedMailScopeRef = useRef<string | null>(null);
+  const mailNavigationRequestRef = useRef(0);
   const scopeWarned = useRef(false);
   const narrow = useNarrow();
   // Spoken commands aimed at the open email are delivered as counters the detail view reacts to.
@@ -134,6 +146,10 @@ function App() {
    */
   const toApiFolder = (f: Folder): ApiFolder => (f === "calendar" ? "inbox" : f);
   const apiFolder = useCallback((): ApiFolder => (selectedLabelRef.current ? "all" : toApiFolder(folderRef.current)), []);
+  const activeMailScope = useCallback(
+    (): MailScope => ({ accountId: selectedAccountRef.current, labelId: selectedLabelRef.current, folder: apiFolder() }),
+    [apiFolder],
+  );
 
   const loadTriage = useCallback(async (list: EmailDto[]) => {
     const results = await Promise.all(list.map((e) => api.getTriageResult(e.id)));
@@ -146,15 +162,22 @@ function App() {
   }, []);
 
   const refreshCounts = useCallback(
-    async (accountId: number | null) => {
+    async (
+      accountId: number | null,
+      requestIsCurrent?: () => boolean,
+      requestedScope?: MailScope,
+    ) => {
+      const scope = requestedScope ?? { accountId, labelId: selectedLabelRef.current, folder: apiFolder() };
+      const isMailRequestCurrent = requestIsCurrent ?? (() => sameMailScope(scope, activeMailScope()));
       const [view, folders] = await Promise.all([
-        api.emailCounts(accountId ?? undefined, selectedLabelRef.current, apiFolder()),
+        api.emailCounts(accountId ?? undefined, scope.labelId, scope.folder),
         api.folderCounts(accountId ?? undefined),
       ]);
+      if (!isMailRequestCurrent()) return;
       setCounts(view);
       setFolderCounts(folders);
     },
-    [apiFolder],
+    [activeMailScope, apiFolder],
   );
 
   const refreshLabels = useCallback(async (accountId: number | null) => {
@@ -162,20 +185,38 @@ function App() {
   }, []);
 
   const refreshEmails = useCallback(
-    async (accountId: number | null) => {
+    async (accountId: number | null, navigationGeneration?: number) => {
+      const mailRequestGeneration = navigationGeneration ?? ++mailNavigationRequestRef.current;
+      const scope: MailScope = { accountId, labelId: selectedLabelRef.current, folder: apiFolder() };
+      const isMailRequestCurrent = () =>
+        mailNavigationRequestRef.current === mailRequestGeneration && sameMailScope(scope, activeMailScope());
       const limit = Math.max(PAGE_SIZE, loadedRef.current);
-      const list = await api.listEmails(accountId ?? undefined, limit, 0, selectedLabelRef.current, apiFolder());
+      const list = await api.listEmails(accountId ?? undefined, limit, 0, scope.labelId, scope.folder);
+      if (!isMailRequestCurrent()) return false;
       loadedRef.current = list.length;
       setEmails(list);
-      await Promise.all([loadTriage(list), refreshCounts(accountId)]);
+      loadedMailScopeRef.current = mailScopeKey(scope);
+      await Promise.all([loadTriage(list), refreshCounts(accountId, isMailRequestCurrent, scope)]);
+      return isMailRequestCurrent();
     },
-    [apiFolder, loadTriage, refreshCounts],
+    [activeMailScope, apiFolder, loadTriage, refreshCounts],
   );
 
   const loadOlder = useCallback(async () => {
+    const scope = activeMailScope();
+    const mailRequestGeneration = mailNavigationRequestRef.current;
+    const isMailRequestCurrent = () =>
+      mailNavigationRequestRef.current === mailRequestGeneration && sameMailScope(scope, activeMailScope());
     setLoadingMore(true);
     try {
-      const more = await api.listEmails(selectedAccountId ?? undefined, PAGE_SIZE, loadedRef.current, selectedLabelRef.current, apiFolder());
+      const more = await api.listEmails(
+        selectedAccountId ?? undefined,
+        PAGE_SIZE,
+        loadedRef.current,
+        scope.labelId,
+        scope.folder,
+      );
+      if (!isMailRequestCurrent()) return;
       setEmails((prev) => {
         const seen = new Set(prev.map((e) => e.id));
         const merged = [...prev, ...more.filter((e) => !seen.has(e.id))];
@@ -188,7 +229,7 @@ function App() {
     } finally {
       setLoadingMore(false);
     }
-  }, [selectedAccountId, apiFolder, loadTriage]);
+  }, [selectedAccountId, activeMailScope, loadTriage]);
 
   useEffect(() => {
     api.listAccounts().then(setAccounts).catch((e) => setError(String(e)));
@@ -215,6 +256,8 @@ function App() {
   }, []);
 
   useEffect(() => {
+    // Every navigation invalidates older mail requests before they can update this view.
+    const mailNavigationGeneration = ++mailNavigationRequestRef.current;
     // The calendar is a meetings view and renders no mail, so reloading the message list for it
     // is pure waste - and not cheap waste: refreshEmails re-fetches a page of mail and then
     // issues one getTriageResult IPC call *per email* (see loadTriage), each taking the DB
@@ -225,8 +268,10 @@ function App() {
       refreshCounts(selectedAccountId).catch(() => {});
       return;
     }
+    const scope = mailScopeKey({ accountId: selectedAccountId, labelId: selectedLabelId, folder: toApiFolder(folder) });
+    if (loadedMailScopeRef.current === scope) return;
     loadedRef.current = 0;
-    refreshEmails(selectedAccountId).catch((e) => setError(String(e)));
+    refreshEmails(selectedAccountId, mailNavigationGeneration).catch((e) => setError(String(e)));
   }, [selectedAccountId, selectedLabelId, folder, refreshEmails, refreshCounts]);
 
   useEffect(() => {

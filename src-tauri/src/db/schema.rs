@@ -31,6 +31,10 @@ CREATE INDEX IF NOT EXISTS idx_emails_account_received
     ON emails(account_id, received_at DESC);
 CREATE INDEX IF NOT EXISTS idx_emails_thread
     ON emails(gmail_thread_id);
+-- Folder views partition messages by account/thread and choose the newest message.
+-- Cover that exact access pattern so navigation does not repeatedly sort each thread.
+CREATE INDEX IF NOT EXISTS idx_emails_account_thread_received
+    ON emails(account_id, gmail_thread_id, received_at DESC, id DESC);
 
 CREATE TABLE IF NOT EXISTS triage_results (
     id                 INTEGER PRIMARY KEY AUTOINCREMENT,

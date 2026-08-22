@@ -192,18 +192,27 @@ pub fn list_accounts(state: State<'_, AppState>) -> Result<Vec<AccountDto>, Stri
 /// A thread is *archived* when label data has been recorded for it and no message carries
 /// `INBOX` (rows synced before `label_ids` existed stay in the inbox). `risk_level` is the
 /// worst effective risk in the thread: 2 = danger, 1 = caution, 0 = clean or unanalysed.
-const THREADS_CTE: &str = "WITH threads AS (
-    SELECT e.account_id, e.gmail_thread_id,
-           COUNT(*) AS thread_count,
-           SUM(CASE WHEN e.is_read = 0 THEN 1 ELSE 0 END) AS thread_unread,
-           MAX(CASE WHEN e.label_ids LIKE '%\"INBOX\"%' THEN 1 ELSE 0 END) AS in_inbox,
-           MAX(CASE WHEN e.label_ids IS NOT NULL THEN 1 ELSE 0 END) AS has_labels,
+const THREADS_CTE: &str = "WITH ranked_threads AS (
+    SELECT e.id AS latest_email_id, e.account_id, e.gmail_thread_id,
+           COUNT(*) OVER thread AS thread_count,
+           SUM(CASE WHEN e.is_read = 0 THEN 1 ELSE 0 END) OVER thread AS thread_unread,
+           MAX(CASE WHEN e.label_ids LIKE '%\"INBOX\"%' THEN 1 ELSE 0 END) OVER thread AS in_inbox,
+           MAX(CASE WHEN e.label_ids IS NOT NULL THEN 1 ELSE 0 END) OVER thread AS has_labels,
            MAX(CASE WHEN COALESCE(tr.user_risk, tr.risk) = 'danger' THEN 2
-                    WHEN COALESCE(tr.user_risk, tr.risk) = 'caution' THEN 1 ELSE 0 END) AS risk_level,
-           MAX(CASE WHEN ?2 IS NOT NULL AND e.label_ids LIKE '%\"' || ?2 || '\"%' THEN 1 ELSE 0 END) AS has_label
+                    WHEN COALESCE(tr.user_risk, tr.risk) = 'caution' THEN 1 ELSE 0 END) OVER thread AS risk_level,
+           MAX(CASE WHEN ?2 IS NOT NULL AND e.label_ids LIKE '%\"' || ?2 || '\"%' THEN 1 ELSE 0 END) OVER thread AS has_label,
+           ROW_NUMBER() OVER (
+               PARTITION BY e.account_id, e.gmail_thread_id
+               ORDER BY e.received_at DESC, e.id DESC
+           ) AS thread_rank
     FROM emails e LEFT JOIN triage_results tr ON tr.email_id = e.id
     WHERE (?1 IS NULL OR e.account_id = ?1)
-    GROUP BY e.account_id, e.gmail_thread_id
+    WINDOW thread AS (PARTITION BY e.account_id, e.gmail_thread_id)
+), threads AS (
+    SELECT latest_email_id, account_id, gmail_thread_id, thread_count, thread_unread,
+           in_inbox, has_labels, risk_level, has_label
+    FROM ranked_threads
+    WHERE thread_rank = 1
 )";
 
 /// SQL predicate (over the `threads` CTE alias `t`) for a sidebar folder. Unknown names
@@ -237,12 +246,9 @@ pub fn list_emails(
          SELECT e.id, e.account_id, e.sender, e.subject, e.body_text, e.received_at, e.is_read, e.to_addrs, e.cc_addrs, e.body_html,
                 e.gmail_thread_id, t.thread_count, t.thread_unread, e.label_ids,
                 EXISTS(SELECT 1 FROM email_link_hits h WHERE h.email_id = e.id) AS has_phishing_link
-         FROM emails e
-         JOIN threads t ON t.account_id = e.account_id AND t.gmail_thread_id = e.gmail_thread_id
-         WHERE e.id = (SELECT t2.id FROM emails t2
-                       WHERE t2.account_id = e.account_id AND t2.gmail_thread_id = e.gmail_thread_id
-                       ORDER BY t2.received_at DESC, t2.id DESC LIMIT 1)
-           AND (?2 IS NULL OR t.has_label = 1)
+         FROM threads t
+         JOIN emails e ON e.id = t.latest_email_id
+         WHERE (?2 IS NULL OR t.has_label = 1)
            AND {}
          ORDER BY e.received_at DESC
          LIMIT ?3 OFFSET ?4",
@@ -2732,6 +2738,48 @@ pub fn rescan_links(state: State<'_, AppState>, account_id: Option<i64>) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn thread_view_uses_latest_message_and_whole_thread_counts() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::schema::run_migrations(&conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO accounts (id, email_address) VALUES (1, 'owner@example.com');
+             INSERT INTO emails
+                 (id, account_id, gmail_message_id, gmail_thread_id, sender, received_at, is_read, label_ids)
+             VALUES
+                 (1, 1, 'm1', 'thread-a', 'a@example.com', '2026-01-01T09:00:00Z', 0, '[\"INBOX\"]'),
+                 (2, 1, 'm2', 'thread-a', 'a@example.com', '2026-01-02T09:00:00Z', 1, '[\"INBOX\"]'),
+                 (3, 1, 'm3', 'thread-b', 'b@example.com', '2026-01-03T09:00:00Z', 1, '[]');",
+        )
+        .unwrap();
+
+        let sql = format!(
+            "{THREADS_CTE}
+             SELECT latest_email_id, thread_count, thread_unread, in_inbox, has_labels
+             FROM threads ORDER BY gmail_thread_id"
+        );
+        let rows = conn
+            .prepare(&sql)
+            .unwrap()
+            .query_map(
+                params![Option::<i64>::None, Option::<String>::None],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, i64>(4)?,
+                    ))
+                },
+            )
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+
+        assert_eq!(rows, vec![(2, 2, 1, 1, 1), (3, 1, 0, 0, 1)]);
+    }
 
     fn part(cid: &str, size: i64) -> InlinePart {
         InlinePart {
