@@ -357,6 +357,37 @@ function isForwardBlock(el: Element): boolean {
   return false;
 }
 
+/**
+ * Every way a user gesture can navigate the frame goes through the app instead. Clicks on
+ * links are routed to `onLink` (which opens them in the system browser after the risk
+ * check); link drags, drops, middle-clicks and the native "Open Link" context menu item
+ * are cancelled outright - each of those would otherwise load the URL *into* the frame,
+ * bypassing the click handler and the "no network from mail" guarantee. Attached before
+ * any other work on the document so a later exception can't leave the frame unguarded.
+ */
+function guardFrame(doc: Document, onLink: (url: string) => void) {
+  const linkOf = (e: Event) => (e.target as Element | null)?.closest?.("a[href]") as HTMLAnchorElement | null;
+  doc.addEventListener("click", (e) => {
+    const a = linkOf(e);
+    if (!a) return;
+    e.preventDefault();
+    const href = (a.getAttribute("href") ?? "").trim();
+    if (/^(https?:|mailto:)/i.test(href)) onLink(href);
+  });
+  doc.addEventListener("auxclick", (e) => {
+    if (linkOf(e)) e.preventDefault();
+  });
+  doc.addEventListener("contextmenu", (e) => {
+    if (linkOf(e)) e.preventDefault();
+  });
+  doc.addEventListener("dragstart", (e) => e.preventDefault());
+  doc.addEventListener("dragover", (e) => {
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "none";
+  });
+  doc.addEventListener("drop", (e) => e.preventDefault());
+}
+
 function HtmlFrame({
   html,
   subject,
@@ -393,9 +424,33 @@ function HtmlFrame({
   const forwardRef = useRef(false);
   const observerRef = useRef<ResizeObserver | null>(null);
   useEffect(() => () => observerRef.current?.disconnect(), []);
+  // Remount counter: bumped when the frame has navigated away from its srcdoc (see handleLoad).
+  const [frameKey, setFrameKey] = useState(0);
+  const remountsRef = useRef(0);
+  useEffect(() => {
+    remountsRef.current = 0;
+  }, [html]);
+
   const handleLoad = () => {
-    const doc = ref.current?.contentDocument;
-    if (!doc?.body) return;
+    let doc: Document | null = null;
+    try {
+      doc = ref.current?.contentDocument ?? null;
+    } catch {
+      doc = null; // cross-origin: the frame is showing a remote page
+    }
+    // `sandbox` has no flag that stops a frame navigating itself: a dropped link or the
+    // native context menu's "Open Link" would replace the mail with a live remote page
+    // (and make a network request). If the document is no longer our srcdoc, throw the
+    // frame away and render the mail again.
+    if (!doc || !/^about:/i.test(doc.URL)) {
+      if (remountsRef.current < 3) {
+        remountsRef.current += 1;
+        setFrameKey((k) => k + 1);
+      }
+      return;
+    }
+    if (!doc.body || doc.URL !== "about:srcdoc") return; // initial about:blank; wait for srcdoc
+    guardFrame(doc, (url) => onLinkRef.current(url));
     const quoteBlocks = [...doc.querySelectorAll(QUOTE_SELECTOR)];
     // A forward: the forwarded message is content (kept visible), but reply history below
     // it is still trimmed behind the toggle - the same thing Gmail does with its "…".
@@ -435,13 +490,6 @@ function HtmlFrame({
       ro.observe(doc.documentElement);
       observerRef.current = ro;
     }
-    doc.addEventListener("click", (e) => {
-      const a = (e.target as Element | null)?.closest?.("a[href]") as HTMLAnchorElement | null;
-      if (!a) return;
-      e.preventDefault();
-      const href = a.getAttribute("href") ?? "";
-      if (/^(https?:|mailto:)/i.test(href.trim())) onLinkRef.current(href.trim());
-    });
   };
 
   useEffect(() => {
@@ -460,6 +508,7 @@ function HtmlFrame({
 
   return (
     <iframe
+      key={frameKey}
       ref={ref}
       title="Email content (sandboxed)"
       className="html-frame"
