@@ -497,9 +497,8 @@ impl GmailClient {
         Ok(resp.id)
     }
 
-    /// Sends an already-created draft via `users.drafts.send`. This is the app's one
-    /// deliberate use of the send capability inherent to the `gmail.compose` scope -
-    /// see the `unsubscribe` module, the only caller. Never used for arbitrary mail.
+    /// Sends an already-created draft via `users.drafts.send`. Used by the mailto
+    /// unsubscribe flow, by reply Send, and by compose (ADR 0010).
     pub async fn send_draft(&self, draft_id: &str) -> Result<(), String> {
         self.http
             .post(format!("{API_BASE}/drafts/send"))

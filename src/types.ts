@@ -117,7 +117,22 @@ export interface EmbedProgressEvent {
   error: string | null;
 }
 
-export type Folder = "inbox" | "quarantine";
+/** Sidebar folders (ADR 0010/0013). `all` is the API value used for label views. */
+export type Folder = "inbox" | "quarantine" | "flagged" | "archive";
+export type ApiFolder = Folder | "all";
+
+export interface FolderCounts {
+  inbox_total: number;
+  inbox_unread: number;
+  quarantine: number;
+  flagged: number;
+  archive: number;
+}
+
+export interface ArchiveResult {
+  archived: boolean;
+  warning: string | null;
+}
 export type ListFilter = "all" | "unread" | "needs_action" | "flagged";
 
 export interface EmailCounts {
@@ -141,6 +156,8 @@ export interface LabelDto {
   /** Your local description of what belongs under this label (what the model reads). */
   description: string | null;
   auto_apply: boolean;
+  /** Conversations carrying this label (ADR 0013). */
+  thread_count: number;
 }
 
 export interface LabelSuggestion {

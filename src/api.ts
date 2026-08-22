@@ -2,7 +2,10 @@ import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type {
   AccountDto,
+  ApiFolder,
   ApplyLabelsResult,
+  ArchiveResult,
+  FolderCounts,
   AttachmentDto,
   LabelDto,
   LabelSuggestion,
@@ -22,15 +25,24 @@ export const api = {
   listAccounts: () => invoke<AccountDto[]>("list_accounts"),
   /** Removes an inbox from this device (local data + keychain token + Google grant). */
   removeAccount: (accountId: number) => invoke<void>("remove_account", { accountId }),
-  listEmails: (accountId?: number, limit?: number, offset?: number, labelId?: string | null) =>
+  listEmails: (accountId?: number, limit?: number, offset?: number, labelId?: string | null, folder?: ApiFolder) =>
     invoke<EmailDto[]>("list_emails", {
       accountId: accountId ?? null,
       limit: limit ?? null,
       offset: offset ?? null,
       labelId: labelId ?? null,
+      folder: folder ?? null,
     }),
-  emailCounts: (accountId?: number, labelId?: string | null) =>
-    invoke<EmailCounts>("email_counts", { accountId: accountId ?? null, labelId: labelId ?? null }),
+  emailCounts: (accountId?: number, labelId?: string | null, folder?: ApiFolder) =>
+    invoke<EmailCounts>("email_counts", { accountId: accountId ?? null, labelId: labelId ?? null, folder: folder ?? null }),
+  /** Sidebar counts for every folder in one call (ADR 0013). */
+  folderCounts: (accountId?: number) => invoke<FolderCounts>("folder_counts", { accountId: accountId ?? null }),
+  /** Archive (or restore) the whole conversation `emailId` belongs to (ADR 0010). */
+  archiveThread: (emailId: number, archived: boolean) =>
+    invoke<ArchiveResult>("archive_thread", { emailId, archived }),
+  /** Compose and send a new message from `accountId` (ADR 0010). */
+  sendMessage: (accountId: number, to: string, cc: string | null, subject: string, body: string) =>
+    invoke<void>("send_message", { accountId, to, cc, subject, body }),
   listLabels: (accountId?: number) => invoke<LabelDto[]>("list_labels", { accountId: accountId ?? null }),
   setLabelSettings: (labelId: number, description: string | null, autoApply: boolean) =>
     invoke<LabelDto>("set_label_settings", { labelId, description, autoApply }),
@@ -69,11 +81,13 @@ export const api = {
     invoke<TriageResult>("set_user_risk", { emailId, risk }),
   getTriageResult: (emailId: number) =>
     invoke<TriageResult | null>("get_triage_result", { emailId }),
-  createGmailDraft: (emailId: number, bodyOverride?: string, replyAll?: boolean) =>
+  /** Creates a reply draft in Gmail; with `send` it is sent at once (ADR 0010). */
+  createGmailDraft: (emailId: number, bodyOverride?: string, replyAll?: boolean, send?: boolean) =>
     invoke<string>("create_gmail_draft", {
       emailId,
       bodyOverride: bodyOverride ?? null,
       replyAll: replyAll ?? false,
+      send: send ?? false,
     }),
   listAttachments: (emailId: number) => invoke<AttachmentDto[]>("list_attachments", { emailId }),
   /** Downloads the attachment to the app cache and opens it with the default app. */

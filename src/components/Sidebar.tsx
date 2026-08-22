@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import type { AccountDto, Folder, LabelDto, ModelStatus, SyncProgressEvent } from "../types";
-import { LockIcon } from "./LockIcon";
+import type { AccountDto, Folder, FolderCounts, LabelDto, ModelStatus, SyncProgressEvent } from "../types";
+import { setTheme } from "../theme";
 
 interface SidebarProps {
   accounts: AccountDto[];
@@ -9,15 +9,17 @@ interface SidebarProps {
   onAddAccount: () => void;
   onRemoveAccount: (accountId: number) => void;
   onSync: () => void;
-  folder: Folder;
+  onCompose: () => void;
+  composing: boolean;
+  /** Active folder, or null when a label view is open. */
+  folder: Folder | null;
   onSelectFolder: (folder: Folder) => void;
-  counts: { inboxTotal: number; inboxUnread: number; quarantine: number };
+  counts: FolderCounts;
   labels: LabelDto[];
   selectedLabelId: string | null;
   onSelectLabel: (gmailLabelId: string | null) => void;
   onSaveLabelSettings: (labelId: number, description: string | null, autoApply: boolean) => Promise<void>;
   modelStatus: ModelStatus;
-  embedModelStatus: ModelStatus;
   busy: boolean;
   /** True while any on-device inference is running (single email or batch). */
   analyzing: boolean;
@@ -27,32 +29,32 @@ interface SidebarProps {
   onOpenSettings: () => void;
 }
 
-
-
 function syncCopy(p: SyncProgressEvent): string {
   switch (p.phase) {
     case "listing":
-      return p.total ? `Syncing: listing inbox ${p.done} of ~${p.total}…` : `Syncing: listing inbox (${p.done})…`;
+      return p.total ? `listing ${p.done} of ~${p.total}` : `listing ${p.done}`;
     case "fetching":
-      return p.total ? `Syncing: downloading ${p.done} of ${p.total}…` : `Syncing: downloading ${p.done}…`;
+      return p.total ? `downloading ${p.done} of ${p.total}` : `downloading ${p.done}`;
     case "history":
-      return `Syncing: applying ${p.done} change${p.done === 1 ? "" : "s"} since last sync…`;
+      return `applying ${p.done} change${p.done === 1 ? "" : "s"}`;
     case "backfill":
-      return p.total ? `Fetching older mail: ${p.done} of ${p.total} in this batch…` : "Fetching older mail…";
+      return p.total ? `older mail ${p.done} of ${p.total}` : "older mail";
     default:
-      return "Syncing…";
+      return "syncing";
   }
 }
 
-function relativeTime(d: Date, now = new Date()): string {
-  const mins = Math.max(0, Math.round((now.getTime() - d.getTime()) / 60000));
-  if (mins < 1) return "JUST NOW";
-  if (mins === 1) return "1 MIN AGO";
-  if (mins < 60) return `${mins} MIN AGO`;
-  const hrs = Math.round(mins / 60);
-  return hrs === 1 ? "1 HOUR AGO" : `${hrs} HOURS AGO`;
+function clock(d: Date): string {
+  return d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false });
 }
 
+/** Whether the page is currently rendering the light palette (theme choice or OS). */
+function isLightNow(): boolean {
+  const root = document.documentElement;
+  if (root.dataset.theme === "light") return true;
+  if (root.dataset.theme === "dark") return false;
+  return window.matchMedia("(prefers-color-scheme: light)").matches;
+}
 
 export function Sidebar({
   accounts,
@@ -61,6 +63,8 @@ export function Sidebar({
   onAddAccount,
   onRemoveAccount,
   onSync,
+  onCompose,
+  composing,
   folder,
   onSelectFolder,
   counts,
@@ -83,6 +87,7 @@ export function Sidebar({
   const [draftAuto, setDraftAuto] = useState(false);
   const [savingLabel, setSavingLabel] = useState(false);
   const [labelError, setLabelError] = useState<string | null>(null);
+  const [light, setLight] = useState(isLightNow);
   const startEdit = (l: LabelDto) => {
     setEditingLabel(l.id);
     setDraftDesc(l.description ?? "");
@@ -102,10 +107,22 @@ export function Sidebar({
     }
   };
   const [, setTick] = useState(0);
-  // Re-render once a minute so "SYNCED N MIN AGO" stays honest.
+  // Re-render once a minute so the synced time stays honest.
   useEffect(() => {
     const t = window.setInterval(() => setTick((x) => x + 1), 60_000);
     return () => window.clearInterval(t);
+  }, []);
+  // Follow theme changes made elsewhere (Settings, OS).
+  useEffect(() => {
+    const update = () => setLight(isLightNow());
+    const mo = new MutationObserver(update);
+    mo.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme", "class"] });
+    const mq = window.matchMedia("(prefers-color-scheme: light)");
+    mq.addEventListener("change", update);
+    return () => {
+      mo.disconnect();
+      mq.removeEventListener("change", update);
+    };
   }, []);
   const switcherRef = useRef<HTMLDivElement>(null);
 
@@ -135,34 +152,50 @@ export function Sidebar({
       : accounts.length === 1
         ? accounts[0].email_address
         : "All inboxes";
-  const avatarLetter = (selectedAccount?.email_address ?? accounts[0]?.email_address ?? "?")
-    .charAt(0)
-    .toUpperCase();
 
   const modelReady = modelStatus.state === "ready";
   const dotPulses = analyzing || modelStatus.state === "loading" || syncProgress !== null;
+  const toggleTheme = () => {
+    setTheme(light ? "dark" : "light");
+    setLight(!light);
+  };
+  const analysisWord =
+    modelStatus.state === "loading"
+      ? "analysis starting"
+      : modelReady
+        ? progress
+          ? `analyzing ${progress.done} of ${progress.total}`
+          : analyzing
+            ? "analyzing"
+            : "analysis on"
+        : modelStatus.state === "failed"
+          ? "analysis unavailable"
+          : "analysis off";
+
+  const folders: { key: Folder; name: string; count: number; tone?: "accent" | "danger" | "caution"; title?: string }[] = [
+    {
+      key: "inbox",
+      name: "Inbox",
+      count: counts.inbox_unread > 0 ? counts.inbox_unread : counts.inbox_total,
+      tone: counts.inbox_unread > 0 ? "accent" : undefined,
+      title: `${counts.inbox_unread} unread of ${counts.inbox_total}`,
+    },
+    { key: "quarantine", name: "Quarantine", count: counts.quarantine, tone: counts.quarantine > 0 ? "danger" : undefined },
+    { key: "flagged", name: "Flagged", count: counts.flagged, tone: counts.flagged > 0 ? "caution" : undefined },
+    { key: "archive", name: "Archive", count: counts.archive },
+  ];
 
   return (
     <aside className="sidebar">
-      <div className="brand">
-        <span className="brand-mark">
-          <LockIcon size={14} />
-        </span>
-        <span className="brand-text">
-          <span className="brand-name">Sentry Mail</span>
-          <span className="mono brand-sub">PRIVATE INBOX</span>
-        </span>
-      </div>
-
       <div className={`account-switcher ${switcherOpen ? "open" : ""}`} ref={switcherRef}>
         <button
           type="button"
-          className="account-switcher-btn"
+          className="account-btn"
           onClick={() => setSwitcherOpen((o) => !o)}
           aria-expanded={switcherOpen}
+          title={accounts.length > 1 ? "Switch inbox" : "Inbox options"}
         >
-          <span className="avatar mono">{avatarLetter}</span>
-          <span className="mono account-address">{switcherLabel}</span>
+          <span className="account-address">{switcherLabel}</span>
           <span className="caret" aria-hidden="true">
             ▾
           </span>
@@ -173,13 +206,13 @@ export function Sidebar({
               <li>
                 <button
                   type="button"
-                  className={selectedAccountId === null ? "active" : ""}
+                  className={`menu-item ${selectedAccountId === null ? "active" : ""}`}
                   onClick={() => {
                     onSelectAccount(null);
                     setSwitcherOpen(false);
                   }}
                 >
-                  <span className="mono">All inboxes</span>
+                  All inboxes
                 </button>
               </li>
             )}
@@ -187,37 +220,35 @@ export function Sidebar({
               <li key={account.id} className="account-menu-row">
                 <button
                   type="button"
-                  className={selectedAccountId === account.id ? "active" : ""}
+                  className={`menu-item mono ${selectedAccountId === account.id ? "active" : ""}`}
                   onClick={() => {
                     onSelectAccount(account.id);
                     setSwitcherOpen(false);
                   }}
                 >
-                  <span className="avatar mono">{account.email_address.charAt(0).toUpperCase()}</span>
-                  <span className="mono">{account.email_address}</span>
+                  {account.email_address}
                 </button>
                 <button
                   type="button"
-                  className="mono account-remove"
+                  className="link-action account-remove"
                   title="Remove this inbox from this device"
                   disabled={busy}
                   onClick={() => setConfirmRemove(account)}
                 >
-                  REMOVE
+                  remove
                 </button>
               </li>
             ))}
             {confirmRemove && (
               <li className="account-confirm sm-fade">
                 <p>
-                  Remove <strong>{confirmRemove.email_address}</strong> from this Mac? Its emails and
-                  analysis stored here are deleted and the app's Google access is revoked. Nothing in
-                  Gmail itself is deleted.
+                  Remove <strong>{confirmRemove.email_address}</strong> from this Mac? Its emails and analysis stored here are
+                  deleted and the app's Google access is revoked. Nothing in Gmail itself is deleted.
                 </p>
                 <div className="account-confirm-actions">
                   <button
                     type="button"
-                    className="btn btn-mini mono is-danger"
+                    className="btn btn-danger"
                     disabled={busy}
                     onClick={() => {
                       const id = confirmRemove.id;
@@ -226,10 +257,10 @@ export function Sidebar({
                       onRemoveAccount(id);
                     }}
                   >
-                    REMOVE INBOX
+                    Remove inbox
                   </button>
-                  <button type="button" className="btn btn-mini mono" onClick={() => setConfirmRemove(null)}>
-                    CANCEL
+                  <button type="button" className="btn" onClick={() => setConfirmRemove(null)}>
+                    Cancel
                   </button>
                 </div>
               </li>
@@ -237,76 +268,63 @@ export function Sidebar({
             <li>
               <button
                 type="button"
-                className="add-inbox"
+                className="menu-item is-accent"
                 disabled={busy}
                 onClick={() => {
                   setSwitcherOpen(false);
                   onAddAccount();
                 }}
               >
-                <span className="mono">+ ADD INBOX</span>
+                + Add inbox
               </button>
             </li>
           </ul>
         )}
       </div>
 
-      <button
-        type="button"
-        className="btn btn-accent btn-block"
-        disabled={busy || accounts.length === 0}
-        onClick={onSync}
-      >
-        <span className="btn-glyph" aria-hidden="true">
-          ↻
+      <div className="mono sync-row">
+        <span className="sync-state" title={lastSyncedAt ? `Last synced ${lastSyncedAt.toLocaleString()}` : undefined}>
+          {syncProgress ? syncCopy(syncProgress) : lastSyncedAt ? `synced ${clock(lastSyncedAt)}` : accounts.length ? "not synced" : "no inbox"}
         </span>
-        {busy ? "Working…" : "Sync inbox"}
+        <span className="sync-sep" aria-hidden="true">
+          /
+        </span>
+        <button type="button" className="sync-link" disabled={busy || accounts.length === 0 || syncProgress !== null} onClick={onSync}>
+          {syncProgress ? "syncing" : busy ? "working" : "sync now"}
+        </button>
+        <span className="sync-sep" aria-hidden="true">
+          /
+        </span>
+        <button type="button" className="sync-link" onClick={toggleTheme} title={light ? "Switch to dark" : "Switch to light"}>
+          {light ? "dark" : "light"}
+        </button>
+      </div>
+
+      <button type="button" className={`compose-btn ${composing ? "active" : ""}`} disabled={accounts.length === 0} onClick={onCompose}>
+        <span className="compose-dot" aria-hidden="true" />
+        New message
       </button>
-      {accounts.length > 0 && (
-        <div className="mono sync-status">
-          {syncProgress ? "SYNCING…" : lastSyncedAt ? `SYNCED ${relativeTime(lastSyncedAt)}` : "NOT SYNCED YET"} · AUTO 5 MIN
-        </div>
-      )}
 
       <nav className="sidebar-scroll">
         <ul className="folder-list">
-          <li>
-            <button
-              type="button"
-              className={`folder ${folder === "inbox" ? "active" : ""}`}
-              onClick={() => onSelectFolder("inbox")}
-            >
-              <span>Inbox</span>
-              {counts.inboxUnread > 0 ? (
-                <span className="mono folder-count folder-count-unread" title={`${counts.inboxUnread} unread of ${counts.inboxTotal}`}>
-                  {counts.inboxUnread}
-                </span>
-              ) : (
-                counts.inboxTotal > 0 && (
-                  <span className="mono folder-count" title="all read">
-                    {counts.inboxTotal}
-                  </span>
-                )
-              )}
-            </button>
-          </li>
-          <li>
-            <button
-              type="button"
-              className={`folder ${folder === "quarantine" ? "active" : ""}`}
-              onClick={() => onSelectFolder("quarantine")}
-            >
-              <span>Quarantine</span>
-              {counts.quarantine > 0 && (
-                <span className="mono folder-count folder-count-danger">{counts.quarantine}</span>
-              )}
-            </button>
-          </li>
+          {folders.map((f) => (
+            <li key={f.key}>
+              <button
+                type="button"
+                className={`folder ${folder === f.key ? "active" : ""}`}
+                onClick={() => onSelectFolder(f.key)}
+                title={f.title}
+              >
+                <span className="folder-name">{f.name}</span>
+                {f.count > 0 && <span className={`mono folder-count ${f.tone ? `is-${f.tone}` : ""}`}>{f.count.toLocaleString()}</span>}
+              </button>
+            </li>
+          ))}
         </ul>
 
         {labels.length > 0 && (
           <>
-            <div className="mono section-label">LABELS</div>
+            <div className="mono section-label">labels</div>
             <ul className="label-list">
               {labels.map((l) => {
                 const active = selectedLabelId === l.gmail_label_id;
@@ -316,23 +334,27 @@ export function Sidebar({
                     <div className="label-row">
                       <button
                         type="button"
-                        className={`label-btn ${active ? "active" : ""}`}
+                        className={`folder label-btn ${active ? "active" : ""}`}
                         onClick={() => onSelectLabel(active ? null : l.gmail_label_id)}
-                        title={l.description ?? "No description yet - the AI can't label with this until you add one"}
+                        title={l.description ?? "No description yet - the model can't suggest this label until you add one"}
                       >
-                        <span className="label-dot" style={{ background: l.color_bg ?? "var(--neutral-dot)" }} />
-                        <span className="label-name">{l.name}</span>
-                        {l.auto_apply && <span className="mono label-flag" title="Applied automatically after analysis">AUTO</span>}
-                        {!l.description && <span className="mono label-flag label-flag-muted">NO DESC</span>}
+                        <span className="label-dot" style={{ background: l.color_bg ?? "var(--accent)" }} />
+                        <span className="folder-name">{l.name}</span>
+                        {l.auto_apply && (
+                          <span className="mono label-flag" title="Applied automatically after analysis">
+                            auto
+                          </span>
+                        )}
+                        {l.thread_count > 0 && <span className="mono folder-count">{l.thread_count.toLocaleString()}</span>}
                       </button>
                       <button type="button" className="mono label-edit" onClick={() => (editing ? setEditingLabel(null) : startEdit(l))}>
-                        {editing ? "CLOSE" : "EDIT"}
+                        {editing ? "close" : "edit"}
                       </button>
                     </div>
                     {editing && (
                       <div className="label-editor sm-fade">
-                        <label className="mono label-editor-title" htmlFor={`label-desc-${l.id}`}>
-                          WHAT BELONGS UNDER “{l.name.toUpperCase()}”
+                        <label className="label-editor-title" htmlFor={`label-desc-${l.id}`}>
+                          What belongs under “{l.name}”
                         </label>
                         <textarea
                           id={`label-desc-${l.id}`}
@@ -341,17 +363,22 @@ export function Sidebar({
                           onChange={(e) => setDraftDesc(e.currentTarget.value)}
                           placeholder="e.g. Invoices, payments, bank details - anything about money owed or paid."
                         />
-                        <label className="mono label-auto">
-                          <input type="checkbox" checked={draftAuto} disabled={!draftDesc.trim()} onChange={(e) => setDraftAuto(e.currentTarget.checked)} />
-                          AUTO-APPLY AFTER ANALYSIS
+                        <label className="label-auto">
+                          <input
+                            type="checkbox"
+                            checked={draftAuto}
+                            disabled={!draftDesc.trim()}
+                            onChange={(e) => setDraftAuto(e.currentTarget.checked)}
+                          />
+                          Apply automatically after analysis
                         </label>
                         {labelError && <p className="inline-error">{labelError}</p>}
                         <div className="label-editor-actions">
-                          <button type="button" className="btn btn-mini mono" disabled={savingLabel} onClick={() => void saveLabel(l)}>
-                            {savingLabel ? "SAVING…" : "SAVE"}
+                          <button type="button" className="btn btn-accent" disabled={savingLabel} onClick={() => void saveLabel(l)}>
+                            {savingLabel ? "Saving…" : "Save"}
                           </button>
-                          <button type="button" className="btn btn-mini mono" disabled={savingLabel} onClick={() => setEditingLabel(null)}>
-                            CANCEL
+                          <button type="button" className="btn" disabled={savingLabel} onClick={() => setEditingLabel(null)}>
+                            Cancel
                           </button>
                         </div>
                       </div>
@@ -362,33 +389,18 @@ export function Sidebar({
             </ul>
           </>
         )}
-
       </nav>
 
-      <div className="sidebar-foot">
+      <div className="sidebar-foot mono">
         <span className={`status-dot ${modelReady ? "on" : ""} ${dotPulses ? "sm-pulse" : ""}`} />
-        <span className="foot-text">
-          {syncProgress
-            ? syncCopy(syncProgress)
-            : progress
-              ? `Analyzing ${progress.done} of ${progress.total}…`
-              : modelStatus.state === "loading"
-                ? "Starting analysis…"
-                : modelReady
-                  ? analyzing
-                    ? "Analyzing…"
-                    : "Private · on-device"
-                  : modelStatus.state === "failed"
-                    ? "Analysis unavailable"
-                    : "Analysis off"}
-        </span>
+        <span className="foot-text">{analysisWord}</span>
         <button
           type="button"
-          className={`mono foot-settings ${modelReady ? "" : "needs-attention"}`}
+          className={`foot-settings ${modelReady ? "" : "needs-attention"}`}
           title="Settings: analysis, search, sync"
           onClick={onOpenSettings}
         >
-          SETTINGS
+          settings
         </button>
       </div>
     </aside>

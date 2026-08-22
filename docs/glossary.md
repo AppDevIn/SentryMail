@@ -19,3 +19,11 @@ Shared vocabulary for Sentry Mail. See `docs/adr/` for the decisions behind thes
 | Snippet | The text shown under a result row: FTS5 `snippet()` with highlighted terms for keyword hits, first ~160 chars for semantic-only hits (ADR 0006). |
 | `attachment_names` | Denormalised, space-joined attachment filenames stored on `emails` so they are indexable without joining `attachments` (ADR 0002). |
 | Search result | One specific message that matched, shown with its thread's subject and an "n in thread" tag; not collapsed by thread (ADR 0007). |
+| Verdict | The effective risk as shown in the reading-pane toolbar: `clean` (risk `safe`), `caution`, or `danger`, suffixed `· yours` when `user_risk` overrides the model. Clicking it opens the verdict menu (ADR 0012). |
+| Flag | One-click shortcut that sets `user_risk = caution` (Unflag clears it). Not a separate field (ADR 0010). |
+| Flagged folder | Sidebar folder listing threads whose effective risk is `caution` or `danger`; same predicate as the Flagged filter (ADR 0010). |
+| Archive | Removing the `INBOX` label from a thread via Gmail modify, mirrored locally. The Archive folder lists threads without `INBOX`; Inbox and label views exclude them, search does not (ADR 0010). |
+| Compose | The New message form in the reading pane. Send creates a Gmail draft and sends it through `drafts/send`; replies use the same Send path (ADR 0010). |
+| Gist | The one-line triage summary shown above the body; risk explanation and warning signs appear under it only for caution/danger (ADR 0011). |
+| Reading pane | The right-hand pane in the three-pane layout that shows the selected thread, compose, or an empty state (ADR 0008). |
+| Folder counts | One backend call returning inbox total/unread, quarantine, flagged and archive counts for the selected account scope (ADR 0013). |

@@ -66,9 +66,9 @@ export function SettingsPanel({
     <div className="settings-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
       <div className="settings sm-fade" role="dialog" aria-modal="true" aria-label="Settings">
         <div className="settings-head">
-          <span className="mono settings-title">SETTINGS</span>
-          <button type="button" className="btn btn-mini mono" onClick={onClose}>
-            CLOSE
+          <span className="settings-title">Settings</span>
+          <button type="button" className="link-action" onClick={onClose}>
+            Close
           </button>
         </div>
 
@@ -85,10 +85,10 @@ export function SettingsPanel({
                   type="button"
                   role="radio"
                   aria-checked={theme === t}
-                  className={`btn btn-mini mono ${theme === t ? "is-selected" : ""}`}
+                  className={`btn btn-mini ${theme === t ? "is-selected" : ""}`}
                   onClick={() => chooseTheme(t)}
                 >
-                  {t.toUpperCase()}
+                  {t.charAt(0).toUpperCase() + t.slice(1)}
                 </button>
               ))}
             </div>
@@ -100,7 +100,7 @@ export function SettingsPanel({
             <div>
               <div className="settings-name">Analysis</div>
               <div className="settings-detail">
-                Classifies each email, checks it for scams, and drafts replies. <span className={`mono settings-state ${modelStatus.state === "ready" ? "is-accent" : ""}`}>{triage.label.toUpperCase()}</span>
+                Classifies each email, checks it for scams, and drafts replies. <span className={`mono settings-state ${modelStatus.state === "ready" ? "is-accent" : ""}`}>{triage.label}</span>
               </div>
               <div className="settings-hint">{triage.detail}</div>
             </div>
@@ -129,7 +129,7 @@ export function SettingsPanel({
             <div>
               <div className="settings-name">Search by meaning</div>
               <div className="settings-detail">
-                Lets the search box find emails by what they're about, not just words. <span className={`mono settings-state ${embedModelStatus.state === "ready" ? "is-accent" : ""}`}>{search.label.toUpperCase()}</span>
+                Lets the search box find emails by what they're about, not just words. <span className={`mono settings-state ${embedModelStatus.state === "ready" ? "is-accent" : ""}`}>{search.label}</span>
               </div>
               <div className="settings-hint">{search.detail}</div>
             </div>
@@ -153,7 +153,7 @@ export function SettingsPanel({
             <div>
               <div className="settings-name">Sync</div>
               <div className="settings-detail">
-                Checks Gmail every 5 minutes while the app is open, and when you press Sync inbox.
+                Checks Gmail every 5 minutes while the app is open, and when you click sync now.
               </div>
               <div className="settings-hint">{lastSyncedAt ? `Last synced ${lastSyncedAt.toLocaleTimeString()}` : "Not synced yet"}</div>
             </div>

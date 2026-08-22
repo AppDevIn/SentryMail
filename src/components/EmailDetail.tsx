@@ -1,21 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
-import type { EmailDto, LabelDto, LabelSuggestion, TriageResult } from "../types";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { EmailDto, LabelDto, LabelSuggestion, Risk, TriageResult } from "../types";
 import { api } from "../api";
-import { MetaTag, RiskPill, typeLabel } from "./Badge";
-import {
-  ArrowLeftIcon,
-  CheckIcon,
-  ChevronDownIcon,
-  MailIcon,
-  MailOpenIcon,
-  PlusIcon,
-  RefreshIcon,
-  ShieldAlertIcon,
-  ShieldCheckIcon,
-  ShieldIcon,
-  SparklesIcon,
-  UndoIcon,
-} from "./icons";
+import { MetaTag, typeLabel } from "./Badge";
+import { ChevronDownIcon, PlusIcon, ShieldAlertIcon, SparklesIcon } from "./icons";
 import { MessageBody, renderPlainLines } from "./MessageBody";
 import { ThreadHistory, type ThreadItem } from "./ThreadHistory";
 import { UnsubscribeControl } from "./UnsubscribeControl";
@@ -38,23 +25,28 @@ interface EmailDetailProps {
   userEmail: string | null;
   triage: TriageResult | null;
   analyzing: boolean;
-  analysisMs: number | null;
   analysisError: string | null;
   modelReady: boolean;
+  narrow: boolean;
+  archived: boolean;
   onOpenSettings: () => void;
   onAnalyze: (emailId: number) => void;
-  onBack: () => void;
+  onClose: () => void;
   onToggleRead: (emailId: number, isRead: boolean) => void;
-  onSetUserRisk: (emailId: number, risk: "safe" | "caution" | "danger" | null) => Promise<void>;
+  onArchive: (emailId: number, archived: boolean) => Promise<void>;
+  onSetUserRisk: (emailId: number, risk: Risk | null) => Promise<void>;
   onSetDone: (emailId: number, done: boolean) => Promise<void>;
   labels: LabelDto[];
   onApplyLabels: (emailId: number, add: string[], remove: string[]) => Promise<void>;
   onSuggestLabels: (emailId: number) => Promise<LabelSuggestion[]>;
-  onSaveDraft: (emailId: number, body: string, replyAll: boolean) => Promise<void>;
+  onSendReply: (emailId: number, body: string, replyAll: boolean) => Promise<void>;
   onDraftWithAi: (emailId: number, instructions?: string, previousDraft?: string) => Promise<string>;
 }
 
-const GMAIL_DRAFTS_URL = "https://mail.google.com/mail/u/0/#drafts";
+/** UI word for a risk value: "clean" for safe (ADR 0012). */
+function verdictWord(risk: Risk): string {
+  return risk === "safe" ? "clean" : risk;
+}
 
 interface DraftPanelProps {
   emailId: number;
@@ -63,38 +55,57 @@ interface DraftPanelProps {
   initialText: string;
   verifyNote: string | null;
   modelReady: boolean;
+  /** Reply all preselected (footer "Reply all"). */
+  replyAllDefault: boolean;
   /** Other recipients on the original (excluding you and the sender); enables Reply all. */
   otherRecipients: string[];
-  onSave: (emailId: number, body: string, replyAll: boolean) => Promise<void>;
+  onSend: (emailId: number, body: string, replyAll: boolean) => Promise<void>;
   onDraftWithAi: ((emailId: number, instructions?: string, previousDraft?: string) => Promise<string>) | null;
-  onClose: (() => void) | null;
+  onClose: () => void;
 }
 
-function DraftPanel({ emailId, title, toneNote, initialText, verifyNote, modelReady, otherRecipients, onSave, onDraftWithAi, onClose }: DraftPanelProps) {
+function DraftPanel({
+  emailId,
+  title,
+  toneNote,
+  initialText,
+  verifyNote,
+  modelReady,
+  replyAllDefault,
+  otherRecipients,
+  onSend,
+  onDraftWithAi,
+  onClose,
+}: DraftPanelProps) {
   const [text, setText] = useState(initialText);
-  const [replyAll, setReplyAll] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
+  const [replyAll, setReplyAll] = useState(replyAllDefault && otherRecipients.length > 0);
+  const [sending, setSending] = useState(false);
+  const [sent, setSent] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [drafting, setDrafting] = useState(false);
   const [guidance, setGuidance] = useState("");
+  const areaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     setText(initialText);
-    setSaved(false);
+    setSent(false);
     setError(null);
   }, [emailId, initialText]);
 
-  const save = async () => {
-    setSaving(true);
+  useEffect(() => {
+    areaRef.current?.focus();
+  }, []);
+
+  const send = async () => {
+    setSending(true);
     setError(null);
     try {
-      await onSave(emailId, text, replyAll);
-      setSaved(true);
+      await onSend(emailId, text, replyAll);
+      setSent(true);
     } catch (e) {
       setError(String(e));
     } finally {
-      setSaving(false);
+      setSending(false);
     }
   };
 
@@ -105,7 +116,7 @@ function DraftPanel({ emailId, title, toneNote, initialText, verifyNote, modelRe
     try {
       // Redrafting sends the current text so "shorter" / "more formal" revise it, not restart.
       setText(await onDraftWithAi(emailId, guidance, text.trim() ? text : undefined));
-      setSaved(false);
+      setSent(false);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -113,7 +124,21 @@ function DraftPanel({ emailId, title, toneNote, initialText, verifyNote, modelRe
     }
   };
 
-  const status = saved ? "Saved to Gmail drafts · not sent" : "Not sent";
+  if (sent) {
+    return (
+      <section className="draft sm-fade">
+        <div className="draft-head">
+          <span className="draft-title">Sent</span>
+          <span className="draft-tone">{replyAll ? `Reply all · ${otherRecipients.length + 1} recipients` : "Reply to sender"}</span>
+        </div>
+        <div className="draft-actions">
+          <button type="button" className="link-action" onClick={onClose}>
+            Close
+          </button>
+        </div>
+      </section>
+    );
+  }
 
   return (
     <section className="draft sm-fade">
@@ -138,10 +163,10 @@ function DraftPanel({ emailId, title, toneNote, initialText, verifyNote, modelRe
         </div>
       ) : (
         <textarea
+          ref={areaRef}
           value={text}
           onChange={(e) => {
             setText(e.currentTarget.value);
-            setSaved(false);
           }}
           rows={8}
           placeholder="Write your reply, or let the on-device model draft one."
@@ -175,14 +200,14 @@ function DraftPanel({ emailId, title, toneNote, initialText, verifyNote, modelRe
       )}
       {error && <p className="inline-error">{error}</p>}
       <div className="draft-actions">
-        <button type="button" className="btn btn-accent" disabled={saving || drafting || !text.trim()} onClick={save}>
-          {saving ? "Saving…" : saved ? "Saved - save again" : "Save to Gmail drafts"}
+        <button type="button" className="btn btn-accent" disabled={sending || drafting || !text.trim()} onClick={send}>
+          {sending ? "Sending…" : "Send"}
         </button>
         {onDraftWithAi && (
           <button
             type="button"
-            className="btn btn-ghost"
-            disabled={drafting || saving || !modelReady}
+            className="btn"
+            disabled={drafting || sending || !modelReady}
             title={modelReady ? "Ask the on-device model for a draft" : "Load the triage model first"}
             onClick={draftWithAi}
           >
@@ -190,29 +215,14 @@ function DraftPanel({ emailId, title, toneNote, initialText, verifyNote, modelRe
           </button>
         )}
         {initialText && (
-          <button
-            type="button"
-            className="btn btn-ghost"
-            disabled={saving || drafting || text === initialText}
-            onClick={() => {
-              setText(initialText);
-              setSaved(false);
-            }}
-          >
+          <button type="button" className="link-action" disabled={sending || drafting || text === initialText} onClick={() => setText(initialText)}>
             Discard edits
           </button>
         )}
-        {onClose && (
-          <button type="button" className="btn btn-ghost" disabled={saving || drafting} onClick={onClose}>
-            Close
-          </button>
-        )}
-        {saved && (
-          <button type="button" className="btn btn-mini" onClick={() => void api.openExternal(GMAIL_DRAFTS_URL)}>
-            Open Gmail to send
-          </button>
-        )}
-        <span className="draft-status">{status}</span>
+        <button type="button" className="link-action" disabled={sending || drafting} onClick={onClose}>
+          Close
+        </button>
+        <span className="draft-status">Sends through Gmail · not sent yet</span>
       </div>
     </section>
   );
@@ -225,16 +235,19 @@ export function EmailDetail({
   analyzing,
   analysisError,
   modelReady,
+  narrow,
+  archived,
   onOpenSettings,
   onAnalyze,
-  onBack,
+  onClose,
   onToggleRead,
+  onArchive,
   onSetUserRisk,
   onSetDone,
   labels,
   onApplyLabels,
   onSuggestLabels,
-  onSaveDraft,
+  onSendReply,
   onDraftWithAi,
 }: EmailDetailProps) {
   const [labelBusy, setLabelBusy] = useState(false);
@@ -259,39 +272,38 @@ export function EmailDetail({
       setLabelBusy(false);
     }
   };
-  const [verdictBusy, setVerdictBusy] = useState(false);
-  const [verdictError, setVerdictError] = useState<string | null>(null);
-  const setDoneSafely = async (done: boolean) => {
-    setVerdictBusy(true);
-    setVerdictError(null);
+  const [actionBusy, setActionBusy] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const runAction = async (fn: () => Promise<void>) => {
+    setActionBusy(true);
+    setActionError(null);
     try {
-      await onSetDone(email.id, done);
+      await fn();
     } catch (e) {
-      setVerdictError(String(e));
+      setActionError(String(e));
     } finally {
-      setVerdictBusy(false);
+      setActionBusy(false);
     }
   };
-  const setVerdict = async (risk: "safe" | "caution" | "danger" | null) => {
-    setVerdictBusy(true);
-    setVerdictError(null);
-    try {
-      await onSetUserRisk(email.id, risk);
-    } catch (e) {
-      setVerdictError(String(e));
-    } finally {
-      setVerdictBusy(false);
-    }
-  };
-  const [signalsOpen, setSignalsOpen] = useState(false);
-  const [replyOpen, setReplyOpen] = useState(false);
-
+  const [verdictOpen, setVerdictOpen] = useState(false);
+  const verdictRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    setSignalsOpen(false);
-    setReplyOpen(false);
+    if (!verdictOpen) return;
+    const onPointer = (e: MouseEvent) => {
+      if (verdictRef.current && !verdictRef.current.contains(e.target as Node)) setVerdictOpen(false);
+    };
+    document.addEventListener("mousedown", onPointer);
+    return () => document.removeEventListener("mousedown", onPointer);
+  }, [verdictOpen]);
+
+  const [reply, setReply] = useState<null | { all: boolean; suggested: boolean }>(null);
+  useEffect(() => {
+    setReply(null);
+    setVerdictOpen(false);
+    setActionError(null);
   }, [email.id]);
 
-  // Escape returns to the inbox (unless focus is in a textarea, where Esc just blurs it).
+  // Escape closes the reading pane (unless focus is in a field, where Esc just blurs it).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
@@ -299,11 +311,15 @@ export function EmailDetail({
         document.activeElement.blur();
         return;
       }
-      onBack();
+      if (verdictOpen) {
+        setVerdictOpen(false);
+        return;
+      }
+      onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onBack]);
+  }, [onClose, verdictOpen]);
 
   const sender = parseSender(email.sender);
 
@@ -341,13 +357,9 @@ export function EmailDetail({
         preview: previewLine(newest),
         summaryText: newest,
         source: "stored",
-        renderExpanded: () => (
-          <MessageBody email={m} risk={null} compact onOpenLink={(url) => api.openExternal(url)} />
-        ),
+        renderExpanded: () => <MessageBody email={m} risk={null} compact onOpenLink={(url) => api.openExternal(url)} />,
       };
     });
-    // Quoted messages that match a stored one (same address, within ~3 min, or same opening
-    // text) are duplicates; keep only the gaps.
     const gaps: ThreadItem[] = quotedMsgs
       .filter((q) => {
         const qts = q.date ? Date.parse(q.date) : NaN;
@@ -378,6 +390,7 @@ export function EmailDetail({
       });
     return [...stored, ...gaps].sort((a, b) => (b.ts ?? -Infinity) - (a.ts ?? -Infinity));
   }, [email.body_text, storedThread]);
+
   const toList = parseAddressList(email.to_addrs);
   const ccList = parseAddressList(email.cc_addrs);
   const addressing = addressingFor(email, userEmail);
@@ -387,17 +400,31 @@ export function EmailDetail({
     .filter((a, i, arr) => arr.indexOf(a) === i && a !== userEmail?.toLowerCase() && a !== sender.address?.toLowerCase());
   const ok = triage?.triage_status === "ok";
   // The verdict driving the UI: the user's override when set, otherwise the model's.
-  const risk = ok ? (triage!.user_risk ?? triage!.risk) : null;
-  const overridden = ok && !!triage!.user_risk && triage!.user_risk !== triage!.risk;
+  const risk: Risk | null = ok ? (triage!.user_risk ?? triage!.risk) : null;
+  const overridden = ok && !!triage!.user_risk;
   const signals = triage ? parseSignals(triage.signals_json) : [];
   const isDanger = risk === "danger";
-  const showAiDraft =
-    ok && (risk === "caution" || (risk === "safe" && triage!.type === "action_needed")) && !!triage!.draft_reply;
+  const flagged = risk === "caution" || risk === "danger";
+  const showAiDraft = ok && (risk === "caution" || (risk === "safe" && triage!.type === "action_needed")) && !!triage!.draft_reply;
   const canReply = !isDanger && !analyzing;
   const youLabel = (r: { name: string; address: string | null }) =>
     r.address && userEmail && r.address.toLowerCase() === userEmail.toLowerCase() ? "you" : r.name;
-
   const isReadNow = email.is_read && email.thread_unread === 0;
+
+  const verdictText = analyzing
+    ? "verdict: pending"
+    : ok
+      ? `verdict: ${verdictWord(risk!)}${overridden ? " · yours" : ""}`
+      : triage
+        ? "verdict: unreadable"
+        : modelReady
+          ? "verdict: pending"
+          : "verdict: not analyzed";
+
+  const setVerdict = (r: Risk | null) => {
+    setVerdictOpen(false);
+    void runAction(() => onSetUserRisk(email.id, r));
+  };
 
   return (
     <article className={`reading sm-fade ${isDanger ? "reading-danger" : ""}`}>
@@ -412,78 +439,82 @@ export function EmailDetail({
       )}
 
       <div className="reading-toolbar" role="toolbar" aria-label="Email actions">
-        <button type="button" className="tb-btn tb-back" onClick={onBack} title="Back to inbox (Esc)">
-          <ArrowLeftIcon />
-          Inbox
+        {narrow && (
+          <button type="button" className="tb-btn tb-back" onClick={onClose} title="Back to the list (Esc)">
+            ‹ Back
+          </button>
+        )}
+        <button type="button" className="tb-btn" onClick={() => onToggleRead(email.id, !email.is_read)}>
+          {isReadNow ? "Mark unread" : "Mark read"}
         </button>
-        <span className="tb-sep" aria-hidden="true" />
-        <div className="tb-group">
+        <button type="button" className="tb-btn" disabled={actionBusy} onClick={() => void runAction(() => onArchive(email.id, !archived))}>
+          {archived ? "Move to inbox" : "Archive"}
+        </button>
+        {ok && (
+          <button type="button" className="tb-btn" disabled={actionBusy} onClick={() => void runAction(() => onSetDone(email.id, !triage!.done))}>
+            {triage!.done ? "Reopen" : "Done"}
+          </button>
+        )}
+        <button
+          type="button"
+          className="tb-btn"
+          disabled={!modelReady || actionBusy || analyzing}
+          title={modelReady ? "Run the on-device analysis again" : "Turn on analysis in Settings first"}
+          onClick={() => onAnalyze(email.id)}
+        >
+          {triage ? "Re-analyze" : "Analyze"}
+        </button>
+        <span className="tb-spacer" />
+        <div className={`verdict ${risk ? `verdict-${risk}` : ""}`} ref={verdictRef}>
           <button
             type="button"
-            className="tb-btn"
-            title={isReadNow ? "Mark as unread" : "Mark as read"}
-            onClick={() => onToggleRead(email.id, !email.is_read)}
+            className="mono verdict-btn"
+            aria-haspopup="menu"
+            aria-expanded={verdictOpen}
+            disabled={!ok}
+            title={ok ? "Set your own verdict" : "Available once the email has been analyzed"}
+            onClick={() => setVerdictOpen((o) => !o)}
           >
-            {isReadNow ? <MailIcon /> : <MailOpenIcon />}
-            {isReadNow ? "Mark unread" : "Mark read"}
+            {verdictText}
+            {ok && <ChevronDownIcon className="verdict-chev" />}
           </button>
-          {ok &&
-            (!triage!.done ? (
-              <button type="button" className="tb-btn" disabled={verdictBusy} onClick={() => void setDoneSafely(true)}>
-                <CheckIcon />
-                Mark done
-              </button>
-            ) : (
-              <button type="button" className="tb-btn" disabled={verdictBusy} onClick={() => void setDoneSafely(false)}>
-                <UndoIcon />
-                Reopen
-              </button>
-            ))}
-          {ok && (
-            <button
-              type="button"
-              className="tb-btn"
-              disabled={!modelReady || verdictBusy || analyzing}
-              title={modelReady ? "Run the on-device analysis again" : "Load the triage model first"}
-              onClick={() => onAnalyze(email.id)}
-            >
-              <RefreshIcon />
-              Re-analyze
-            </button>
+          {verdictOpen && ok && (
+            <ul className="verdict-menu sm-fade" role="menu">
+              <li>
+                <button type="button" role="menuitem" className={`menu-item ${risk === "safe" ? "active" : ""}`} onClick={() => setVerdict("safe")}>
+                  Not a threat
+                </button>
+              </li>
+              <li>
+                <button type="button" role="menuitem" className={`menu-item ${risk === "caution" ? "active" : ""}`} onClick={() => setVerdict("caution")}>
+                  Caution
+                </button>
+              </li>
+              <li>
+                <button type="button" role="menuitem" className={`menu-item is-danger ${risk === "danger" ? "active" : ""}`} onClick={() => setVerdict("danger")}>
+                  Danger
+                </button>
+              </li>
+              {overridden && (
+                <li className="menu-sep">
+                  <button type="button" role="menuitem" className="menu-item" onClick={() => setVerdict(null)}>
+                    Use model's verdict ({verdictWord(triage!.risk)})
+                  </button>
+                </li>
+              )}
+            </ul>
           )}
         </div>
-        <span className="tb-spacer" />
         {ok && (
-          <div className={`tb-group tb-security ${risk === "danger" ? "is-danger" : risk === "caution" ? "is-caution" : ""}`} aria-label="Security verdict">
-            <span className="tb-group-label">
-              <ShieldIcon />
-              Verdict
-            </span>
-            {risk !== "safe" && (
-              <button type="button" className="tb-btn" disabled={verdictBusy} onClick={() => void setVerdict("safe")}>
-                <ShieldCheckIcon />
-                Not a threat
-              </button>
-            )}
-            {risk === "safe" && (
-              <button type="button" className="tb-btn" disabled={verdictBusy} onClick={() => void setVerdict("caution")}>
-                <ShieldAlertIcon />
-                Flag as suspicious
-              </button>
-            )}
-            {risk !== "danger" && (
-              <button type="button" className="tb-btn tb-btn-danger" disabled={verdictBusy} onClick={() => void setVerdict("danger")}>
-                <ShieldAlertIcon />
-                Mark danger
-              </button>
-            )}
-            {triage!.user_risk && (
-              <button type="button" className="tb-btn" disabled={verdictBusy} title="Go back to the model's verdict" onClick={() => void setVerdict(null)}>
-                <UndoIcon />
-                Reset
-              </button>
-            )}
-          </div>
+          <button
+            type="button"
+            className={`tb-btn ${risk === "caution" && overridden ? "is-caution" : ""}`}
+            disabled={actionBusy}
+            title={risk === "caution" && overridden ? "Clear your flag" : "Flag as suspicious (sets your verdict to caution)"}
+            onClick={() => setVerdict(risk === "caution" && overridden ? null : "caution")}
+          >
+            {risk === "caution" && overridden ? "Unflag" : "Flag"}
+          </button>
         )}
       </div>
 
@@ -491,53 +522,43 @@ export function EmailDetail({
         <header className="reading-header">
           <h2 className="reading-subject">{email.subject || "(no subject)"}</h2>
 
-          <div className="reading-from">
-            <div className="reading-from-lines">
-              <div className="reading-from-line">
-                <span className="reading-sender">{sender.name}</span>
-                {sender.address && sender.address !== sender.name && (
-                  <span className={`reading-address ${isDanger && signals.includes("sender_mismatch") ? "is-spoofed" : ""}`}>
-                    {sender.address}
-                  </span>
-                )}
-                {ok && (
-                  <span className="reading-badges">
-                    {risk !== "safe" && <RiskPill risk={risk!} />}
-                    {triage!.type === "action_needed" && !triage!.done && <MetaTag tone="urgent">Needs action</MetaTag>}
-                    {triage!.type !== "action_needed" && <MetaTag>{typeLabel(triage!.type)}</MetaTag>}
-                    {triage!.priority === "high" && <MetaTag tone="urgent">High priority</MetaTag>}
-                    {triage!.done && <MetaTag tone="accent">Done</MetaTag>}
-                    {overridden && <MetaTag>Your call · was {triage!.risk}</MetaTag>}
-                  </span>
-                )}
-                <time className="reading-time" dateTime={email.received_at}>
-                  {formatFullTime(email.received_at)}
-                </time>
-              </div>
-              {(toList.length > 0 || ccList.length > 0) && (
-                <div className="reading-from-line reading-to">
-                  {toList.length > 0 && (
-                    <span className="recipients-group">
-                      <span className="field-label">To</span>
-                      <span className="recipients-names">{toList.map(youLabel).join(", ")}</span>
-                    </span>
-                  )}
-                  {ccList.length > 0 && (
-                    <span className="recipients-group">
-                      <span className="field-label">Cc</span>
-                      <span className="recipients-names">{ccList.map(youLabel).join(", ")}</span>
-                    </span>
-                  )}
-                  {addressing === "cc" && <MetaTag tone="caution">You're cc'd</MetaTag>}
-                  {addressing === "none" && <MetaTag>Not addressed to you</MetaTag>}
-                </div>
-              )}
-            </div>
+          <div className="reading-from-line">
+            <span className="reading-sender">{sender.name}</span>
+            {sender.address && sender.address !== sender.name && (
+              <span className={`mono reading-address ${isDanger && signals.includes("sender_mismatch") ? "is-spoofed" : ""}`}>
+                {sender.address}
+              </span>
+            )}
+            <time className="mono reading-time" dateTime={email.received_at}>
+              {formatFullTime(email.received_at)}
+            </time>
+          </div>
+          <div className="reading-from-line reading-to">
+            {toList.length > 0 && (
+              <span className="recipients-group">
+                <span className="field-label">To</span>
+                <span className="recipients-names">{toList.map(youLabel).join(", ")}</span>
+              </span>
+            )}
+            {ccList.length > 0 && (
+              <span className="recipients-group">
+                <span className="field-label">Cc</span>
+                <span className="recipients-names">{ccList.map(youLabel).join(", ")}</span>
+              </span>
+            )}
+            {addressing === "cc" && <span className="field-note">you're cc'd</span>}
+            {addressing === "none" && <span className="field-note">not addressed to you</span>}
+            {ok && (
+              <span className="reading-badges">
+                {triage!.type === "action_needed" && !triage!.done && <MetaTag tone="urgent">Needs action</MetaTag>}
+                {triage!.priority === "high" && !triage!.done && <MetaTag tone="urgent">High priority</MetaTag>}
+                {triage!.done && <MetaTag tone="accent">Done</MetaTag>}
+              </span>
+            )}
           </div>
 
           {labels.length > 0 && (
             <div className="labels-row">
-              <span className="field-label">Labels</span>
               {applied.map((l) => (
                 <span key={l.id} className="label-chip label-chip-lg" style={{ background: l.color_bg ?? undefined, color: l.color_fg ?? undefined }}>
                   {l.name}
@@ -552,35 +573,27 @@ export function EmailDetail({
                   </button>
                 </span>
               ))}
-              {suggestions?.filter((s) => !email.label_ids.includes(s.gmail_label_id)).map((s) => (
-                <button
-                  key={s.gmail_label_id}
-                  type="button"
-                  className="label-suggestion"
-                  disabled={labelBusy}
-                  title="Suggested by the on-device model - click to apply"
-                  onClick={() => void runLabels(() => onApplyLabels(email.id, [s.gmail_label_id], []))}
-                >
-                  + {s.name}
-                </button>
-              ))}
+              {suggestions
+                ?.filter((s) => !email.label_ids.includes(s.gmail_label_id))
+                .map((s) => (
+                  <button
+                    key={s.gmail_label_id}
+                    type="button"
+                    className="label-suggestion"
+                    disabled={labelBusy}
+                    title="Suggested by the on-device model - click to apply"
+                    onClick={() => void runLabels(() => onApplyLabels(email.id, [s.gmail_label_id], []))}
+                  >
+                    + {s.name}
+                  </button>
+                ))}
               {suggestions && suggestions.filter((s) => !email.label_ids.includes(s.gmail_label_id)).length === 0 && (
                 <span className="label-note">No matching label</span>
               )}
-              <button
-                type="button"
-                className="link-action is-accent"
-                disabled={labelBusy || !modelReady}
-                title={modelReady ? "Ask the on-device model which of your described labels fit" : "Load the triage model first"}
-                onClick={() => void runLabels(async () => setSuggestions(await onSuggestLabels(email.id)))}
-              >
-                <SparklesIcon />
-                {labelBusy ? "Thinking…" : suggestions ? "Suggest again" : "Suggest labels"}
-              </button>
               <span className="label-picker">
                 <button type="button" className="link-action" disabled={labelBusy} onClick={() => setPickerOpen((o) => !o)}>
                   <PlusIcon />
-                  Add label
+                  label
                 </button>
                 {pickerOpen && (
                   <ul className="label-picker-menu sm-fade">
@@ -590,86 +603,55 @@ export function EmailDetail({
                         <li key={l.id}>
                           <button
                             type="button"
+                            className="menu-item"
                             onClick={() => {
                               setPickerOpen(false);
                               void runLabels(() => onApplyLabels(email.id, [l.gmail_label_id], []));
                             }}
                           >
-                            <span className="label-dot" style={{ background: l.color_bg ?? "var(--neutral-dot)" }} />
+                            <span className="label-dot" style={{ background: l.color_bg ?? "var(--accent)" }} />
                             {l.name}
                           </button>
                         </li>
                       ))}
+                    {labels.filter((l) => !email.label_ids.includes(l.gmail_label_id)).length === 0 && (
+                      <li className="label-note">All labels applied</li>
+                    )}
                   </ul>
                 )}
               </span>
+              <button
+                type="button"
+                className="link-action"
+                disabled={labelBusy || !modelReady}
+                title={modelReady ? "Ask the on-device model which of your described labels fit" : "Turn on analysis first"}
+                onClick={() => void runLabels(async () => setSuggestions(await onSuggestLabels(email.id)))}
+              >
+                <SparklesIcon />
+                {labelBusy ? "Thinking…" : suggestions ? "Suggest again" : "Suggest"}
+              </button>
               {labelError && <span className="inline-error">{labelError}</span>}
             </div>
           )}
           <UnsubscribeControl emailId={email.id} />
         </header>
 
-        <section className={`summary-card summary-${risk ?? "none"}`} aria-live="polite">
-          <span className="summary-icon" aria-hidden="true">
-            {analyzing ? <SparklesIcon className="sm-pulse" /> : isDanger ? <ShieldAlertIcon /> : <SparklesIcon />}
-          </span>
-          <div className="summary-content">
-            <div className="summary-head">
-              <span className="summary-label">Summary</span>
-              <span className="summary-meta">
-                {analyzing ? "Analyzing on-device…" : ok ? "On-device" : modelReady ? "Not analyzed" : "Analysis off"}
-              </span>
-            </div>
-
-            {!analyzing && !triage && (
-              <div className="summary-status">
-                {modelReady ? (
-                  <>
-                    <span className="summary-muted">This email hasn't been analyzed yet.</span>
-                    <button type="button" className="btn btn-mini" onClick={() => onAnalyze(email.id)}>
-                      {analysisError ? "Retry" : "Analyze"}
-                    </button>
-                    {analysisError && <span className="inline-error">{analysisError}</span>}
-                  </>
-                ) : (
-                  <>
-                    <span className="summary-muted">Turn on analysis to get a summary and a risk check.</span>
-                    <button type="button" className="btn btn-mini" onClick={onOpenSettings}>
-                      Open settings
-                    </button>
-                  </>
-                )}
-              </div>
-            )}
-
-            {!analyzing && triage && !ok && (
-              <div className="summary-status">
-                <span className="summary-muted">Analysis didn't produce a readable result.</span>
-                <button type="button" className="btn btn-mini" disabled={!modelReady} onClick={() => onAnalyze(email.id)}>
-                  Retry
-                </button>
-              </div>
-            )}
-
-            {analyzing && (
+        <section className={`gist ${flagged ? `gist-${risk}` : ""}`} aria-live="polite">
+          <span className="mono gist-label">gist</span>
+          <div className="gist-body">
+            {analyzing ? (
               <div className="skeleton">
                 <span className="skeleton-bar sm-sweep" style={{ width: "62%" }} />
                 <span className="skeleton-bar sm-sweep" style={{ width: "38%" }} />
               </div>
-            )}
-
-            {!analyzing && triage && ok && (
-              <div className="summary-body sm-fade">
-                <p className="summary-text">{triage.summary}</p>
-                {risk !== "safe" && <p className="summary-why">{triage.risk_explanation}</p>}
-                {signals.length > 0 && (
-                  <div className="signals">
-                    <button type="button" className="link-action" aria-expanded={signalsOpen} onClick={() => setSignalsOpen((o) => !o)}>
-                      <ChevronDownIcon className={`chev ${signalsOpen ? "is-open" : ""}`} />
-                      {signalsOpen ? "Hide" : "Show"} {signals.length} {signals.length === 1 ? "warning sign" : "warning signs"}
-                    </button>
-                    {signalsOpen && (
-                      <ul className="signal-list sm-fade">
+            ) : ok ? (
+              <>
+                <p className="gist-text">{triage!.summary}</p>
+                {flagged && (
+                  <div className="risk-detail sm-fade">
+                    <p className="risk-why">{triage!.risk_explanation}</p>
+                    {signals.length > 0 && (
+                      <ul className="signal-list">
                         {signals.map((s) => (
                           <li key={s}>
                             <span className={`signal-tag signal-tag-${risk}`}>{signalLabel(s)}</span>
@@ -680,9 +662,31 @@ export function EmailDetail({
                     )}
                   </div>
                 )}
-                {verdictError && <p className="inline-error">{verdictError}</p>}
-              </div>
+              </>
+            ) : triage ? (
+              <p className="gist-muted">
+                Analysis didn't produce a readable result.{" "}
+                <button type="button" className="link-action is-accent" disabled={!modelReady} onClick={() => onAnalyze(email.id)}>
+                  Retry
+                </button>
+              </p>
+            ) : modelReady ? (
+              <p className="gist-muted">
+                Not analyzed yet.{" "}
+                <button type="button" className="link-action is-accent" onClick={() => onAnalyze(email.id)}>
+                  {analysisError ? "Retry" : "Analyze"}
+                </button>
+                {analysisError && <span className="inline-error"> {analysisError}</span>}
+              </p>
+            ) : (
+              <p className="gist-muted">
+                Analysis is off.{" "}
+                <button type="button" className="link-action is-accent" onClick={onOpenSettings}>
+                  Open settings
+                </button>
+              </p>
             )}
+            {actionError && <p className="inline-error">{actionError}</p>}
           </div>
         </section>
 
@@ -698,52 +702,48 @@ export function EmailDetail({
 
         <MessageBody email={email} risk={risk} onOpenLink={(url) => api.openExternal(url)} />
 
-        {!analyzing && showAiDraft && (
-          <DraftPanel
-            emailId={email.id}
-            title="Suggested reply"
-            toneNote={`Tone: ${risk === "caution" ? "cautious, verify first" : "matched to thread"} · editable`}
-            initialText={triage!.draft_reply ?? ""}
-            verifyNote={risk === "caution" ? triage!.next_step_warning : null}
-            modelReady={modelReady}
-            otherRecipients={otherRecipients}
-            onSave={onSaveDraft}
-            onDraftWithAi={onDraftWithAi}
-            onClose={null}
-          />
-        )}
-
-        {!analyzing && !showAiDraft && canReply && !replyOpen && (
-          <div className="reply-cta">
-            <button type="button" className="btn" onClick={() => setReplyOpen(true)}>
+        {!analyzing && canReply && !reply && (
+          <div className="reply-footer">
+            <button type="button" className="reply-link is-accent" onClick={() => setReply({ all: false, suggested: showAiDraft })}>
               Reply
             </button>
-            <span className="reply-cta-note">{addressing === "cc" ? "You were cc'd · no reply expected" : ""}</span>
+            {otherRecipients.length > 0 && (
+              <button type="button" className="reply-link" onClick={() => setReply({ all: true, suggested: showAiDraft })}>
+                Reply all
+              </button>
+            )}
+            {showAiDraft && (
+              <span className="reply-note">
+                <SparklesIcon /> A suggested reply is ready
+              </span>
+            )}
+            {addressing === "cc" && !showAiDraft && <span className="reply-note">You were cc'd · no reply expected</span>}
           </div>
         )}
 
-        {!analyzing && !showAiDraft && canReply && replyOpen && (
+        {!analyzing && canReply && reply && (
           <DraftPanel
             emailId={email.id}
-            title="Your reply"
-            toneNote={addressing === "cc" ? "You were cc'd · optional" : "Editable"}
-            initialText=""
+            title={reply.suggested ? "Suggested reply" : "Your reply"}
+            toneNote={
+              reply.suggested
+                ? `Tone: ${risk === "caution" ? "cautious, verify first" : "matched to thread"} · editable`
+                : addressing === "cc"
+                  ? "You were cc'd · optional"
+                  : "Editable"
+            }
+            initialText={reply.suggested ? (triage!.draft_reply ?? "") : ""}
             verifyNote={risk === "caution" && triage?.next_step_warning ? triage.next_step_warning : null}
             modelReady={modelReady}
+            replyAllDefault={reply.all}
             otherRecipients={otherRecipients}
-            onSave={onSaveDraft}
+            onSend={onSendReply}
             onDraftWithAi={onDraftWithAi}
-            onClose={() => setReplyOpen(false)}
+            onClose={() => setReply(null)}
           />
         )}
 
-        <ThreadHistory
-          items={threadItems}
-          userEmail={userEmail}
-          summarize={api.summarizeMessage}
-          modelReady={modelReady}
-          autoSummarize={!analyzing}
-        />
+        <ThreadHistory items={threadItems} userEmail={userEmail} summarize={api.summarizeMessage} modelReady={modelReady} autoSummarize={!analyzing} />
       </div>
     </article>
   );

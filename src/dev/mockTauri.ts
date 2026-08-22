@@ -159,10 +159,27 @@ const emails: EmailDto[] = [
   },
 ];
 
+emails.push({
+  id: 9,
+  account_id: 1,
+  gmail_thread_id: "t9",
+  thread_count: 1,
+  thread_unread: 0,
+  label_ids: [],
+  sender: "Facilities Desk <facilities@northgate.io>",
+  to_addrs: "jordan@northgate.io",
+  cc_addrs: "",
+  body_html: null,
+  subject: "Booking receipt - Room 3B, 13 Nov",
+  body_text: "Automated receipt. Room 3B is booked for 13 Nov, 14:00-16:00. No reply needed.",
+  received_at: iso(60 * 24 * 6),
+  is_read: true,
+});
+
 const labels: LabelDto[] = [
-  { id: 1, account_id: 1, gmail_label_id: "Label_1", name: "Finance", label_type: "user", color_bg: "#fb4c2f", color_fg: "#ffffff", description: "Invoices, payments, bank details, anything about money owed or paid.", auto_apply: true },
-  { id: 2, account_id: 1, gmail_label_id: "Label_2", name: "Clients", label_type: "user", color_bg: "#ffad47", color_fg: "#000000", description: null, auto_apply: false },
-  { id: 3, account_id: 1, gmail_label_id: "Label_3", name: "Internal", label_type: "user", color_bg: "#16a766", color_fg: "#ffffff", description: "Mail between Northgate colleagues: reviews, scheduling, internal process.", auto_apply: false },
+  { id: 1, account_id: 1, gmail_label_id: "Label_1", name: "Finance", label_type: "user", color_bg: "#fb4c2f", color_fg: "#ffffff", description: "Invoices, payments, bank details, anything about money owed or paid.", auto_apply: true, thread_count: 1 },
+  { id: 2, account_id: 1, gmail_label_id: "Label_2", name: "Clients", label_type: "user", color_bg: "#ffad47", color_fg: "#000000", description: null, auto_apply: false, thread_count: 0 },
+  { id: 3, account_id: 1, gmail_label_id: "Label_3", name: "Internal", label_type: "user", color_bg: "#16a766", color_fg: "#ffffff", description: "Mail between Northgate colleagues: reviews, scheduling, internal process.", auto_apply: false, thread_count: 0 },
 ];
 
 const base = { model_version: "fixture", triage_status: "ok" as const, user_risk: null as null, done: false };
@@ -223,6 +240,42 @@ const triage: Record<number, TriageResult> = {
 
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+const threadOf = (e: EmailDto) => emails.filter((x) => x.account_id === e.account_id && x.gmail_thread_id === e.gmail_thread_id);
+/** One row per thread (latest message), newest first, like the real backend. */
+function latestPerThread(): EmailDto[] {
+  const latest = new Map<string, EmailDto>();
+  for (const e of [...emails].sort((a, b) => b.received_at.localeCompare(a.received_at))) {
+    if (!latest.has(e.gmail_thread_id)) latest.set(e.gmail_thread_id, e);
+  }
+  return [...latest.values()];
+}
+function threadRisk(e: EmailDto): number {
+  let level = 0;
+  for (const m of threadOf(e)) {
+    const t = triage[m.id];
+    const r = t ? (t.user_risk ?? t.risk) : null;
+    if (r === "danger") level = 2;
+    else if (r === "caution") level = Math.max(level, 1);
+  }
+  return level;
+}
+/** Mirrors `folder_predicate` in commands.rs. */
+function inFolder(e: EmailDto, folder: string): boolean {
+  const archived = !threadOf(e).some((m) => m.label_ids.includes("INBOX"));
+  switch (folder) {
+    case "archive":
+      return archived;
+    case "flagged":
+      return !archived && threadRisk(e) >= 1;
+    case "quarantine":
+      return !archived && threadRisk(e) === 2;
+    case "all":
+      return true;
+    default:
+      return !archived;
+  }
+}
+
 window.__TAURI_INTERNALS__ = {
   invoke: async (cmd: string, args: Record<string, unknown> = {}) => {
     switch (cmd) {
@@ -264,19 +317,40 @@ window.__TAURI_INTERNALS__ = {
         const offset = (args.offset as number | null) ?? 0;
         const limit = (args.limit as number | null) ?? 100;
         const labelId = (args.labelId as string | null) ?? null;
-        // One row per thread (latest message), like the real backend.
-        const latest = new Map<string, EmailDto>();
-        for (const e of [...emails].sort((a, b) => b.received_at.localeCompare(a.received_at))) {
-          if (!latest.has(e.gmail_thread_id)) latest.set(e.gmail_thread_id, e);
-        }
-        return [...latest.values()]
-          .filter((e) => !labelId || emails.some((x) => x.gmail_thread_id === e.gmail_thread_id && x.label_ids.includes(labelId)))
+        const folder = (args.folder as string | null) ?? "inbox";
+        return latestPerThread()
+          .filter((e) => !labelId || threadOf(e).some((x) => x.label_ids.includes(labelId)))
+          .filter((e) => inFolder(e, folder))
           .map((e) => ({
             ...e,
-            thread_count: emails.filter((x) => x.gmail_thread_id === e.gmail_thread_id).length,
-            thread_unread: emails.filter((x) => x.gmail_thread_id === e.gmail_thread_id && !x.is_read).length,
+            thread_count: threadOf(e).length,
+            thread_unread: threadOf(e).filter((x) => !x.is_read).length,
           }))
           .slice(offset, offset + limit);
+      }
+      case "folder_counts": {
+        const rows = latestPerThread();
+        return {
+          inbox_total: rows.filter((e) => inFolder(e, "inbox")).length,
+          inbox_unread: rows.filter((e) => inFolder(e, "inbox") && threadOf(e).some((x) => !x.is_read)).length,
+          quarantine: rows.filter((e) => inFolder(e, "quarantine")).length,
+          flagged: rows.filter((e) => inFolder(e, "flagged")).length,
+          archive: rows.filter((e) => inFolder(e, "archive")).length,
+        };
+      }
+      case "archive_thread": {
+        await delay(200);
+        const e = emails.find((x) => x.id === args.emailId);
+        if (!e) throw new Error("email not found");
+        for (const m of threadOf(e)) {
+          m.label_ids = args.archived ? m.label_ids.filter((l) => l !== "INBOX") : [...new Set(["INBOX", ...m.label_ids])];
+        }
+        return { archived: !!args.archived, warning: null };
+      }
+      case "send_message": {
+        await delay(600);
+        if (!String(args.to ?? "").includes("@")) throw new Error("Add at least one recipient address");
+        return null;
       }
       case "list_thread_messages": {
         const e = emails.find((x) => x.id === args.emailId);
@@ -285,9 +359,12 @@ window.__TAURI_INTERNALS__ = {
           : [];
       }
       case "email_counts": {
-        const threads = new Set(emails.map((e) => e.gmail_thread_id));
-        const unreadThreads = new Set(emails.filter((e) => !e.is_read).map((e) => e.gmail_thread_id));
-        return { total: threads.size, unread: unreadThreads.size };
+        const labelId = (args.labelId as string | null) ?? null;
+        const folder = (args.folder as string | null) ?? "inbox";
+        const rows = latestPerThread()
+          .filter((e) => !labelId || threadOf(e).some((x) => x.label_ids.includes(labelId)))
+          .filter((e) => inFolder(e, folder));
+        return { total: rows.length, unread: rows.filter((e) => threadOf(e).some((x) => !x.is_read)).length };
       }
       case "set_read": {
         const e = emails.find((x) => x.id === args.emailId);
@@ -361,7 +438,7 @@ window.__TAURI_INTERNALS__ = {
           ? { method: { kind: "browser", url: "https://ciphergram.news/unsubscribe" }, unsubscribed_at: null }
           : { method: { kind: "unavailable" }, unsubscribed_at: null };
       case "create_gmail_draft":
-        await delay(400);
+        await delay(args.send ? 700 : 400);
         return "draft-fixture";
       case "summarize_message": {
         if (!args.allowGenerate) return null;

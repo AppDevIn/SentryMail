@@ -3,10 +3,12 @@ import { listen } from "@tauri-apps/api/event";
 import { api } from "./api";
 import type {
   AccountDto,
+  ApiFolder,
   EmailCounts,
-  LabelDto,
   EmailDto,
   Folder,
+  FolderCounts,
+  LabelDto,
   ListFilter,
   ModelStatus,
   SearchResultDto,
@@ -14,10 +16,10 @@ import type {
   TriageProgressEvent,
   TriageResult,
 } from "./types";
-import { effectiveRisk } from "./format";
 import { Sidebar } from "./components/Sidebar";
 import { EmailList } from "./components/EmailList";
 import { EmailDetail } from "./components/EmailDetail";
+import { Compose } from "./components/Compose";
 import { SettingsPanel } from "./components/SettingsPanel";
 import "./App.css";
 
@@ -28,16 +30,38 @@ const AUTO_SYNC_MS = 5 * 60 * 1000;
 const SEARCH_DEBOUNCE_MS = 200;
 /** Most results one search returns. ADR 0006. */
 const SEARCH_RESULT_CAP = 50;
+/** Below this width the three panes collapse to list-or-reading (ADR 0008). */
+const NARROW_MAX_PX = 1100;
+
+const EMPTY_FOLDER_COUNTS: FolderCounts = { inbox_total: 0, inbox_unread: 0, quarantine: 0, flagged: 0, archive: 0 };
+
+/** What the reading pane shows. */
+type Pane = { kind: "empty" } | { kind: "thread"; emailId: number } | { kind: "compose" };
+
+function useNarrow(): boolean {
+  const [narrow, setNarrow] = useState(() => window.innerWidth < NARROW_MAX_PX);
+  useEffect(() => {
+    const mq = window.matchMedia(`(max-width: ${NARROW_MAX_PX - 1}px)`);
+    const update = () => setNarrow(mq.matches);
+    update();
+    mq.addEventListener("change", update);
+    return () => mq.removeEventListener("change", update);
+  }, []);
+  return narrow;
+}
 
 function App() {
   const [accounts, setAccounts] = useState<AccountDto[]>([]);
   const [selectedAccountId, setSelectedAccountId] = useState<number | null>(null);
   const [emails, setEmails] = useState<EmailDto[]>([]);
   const [counts, setCounts] = useState<EmailCounts>({ total: 0, unread: 0 });
+  const [folderCounts, setFolderCounts] = useState<FolderCounts>(EMPTY_FOLDER_COUNTS);
   const [extraEmails, setExtraEmails] = useState<Record<number, EmailDto>>({});
   const [triageByEmail, setTriageByEmail] = useState<Record<number, TriageResult>>({});
-  const [selectedEmailId, setSelectedEmailId] = useState<number | null>(null);
+  const [pane, setPane] = useState<Pane>({ kind: "empty" });
   const [folder, setFolder] = useState<Folder>("inbox");
+  const folderRef = useRef<Folder>("inbox");
+  folderRef.current = folder;
   const [labels, setLabels] = useState<LabelDto[]>([]);
   const [selectedLabelId, setSelectedLabelId] = useState<string | null>(null);
   const selectedLabelRef = useRef<string | null>(null);
@@ -64,13 +88,16 @@ function App() {
   const [lastSyncedAt, setLastSyncedAt] = useState<Date | null>(null);
   const syncingRef = useRef(false);
   const [analyzingIds, setAnalyzingIds] = useState<Set<number>>(new Set());
-  const [analysisMs, setAnalysisMs] = useState<Record<number, number>>({});
   const [analysisErrors, setAnalysisErrors] = useState<Record<number, string>>({});
   // Emails we already auto-analyzed on open this session - don't keep retrying a failure.
   const autoAnalyzed = useRef<Set<number>>(new Set());
   // How many rows are currently loaded, so refreshes keep the same depth.
   const loadedRef = useRef(0);
   const scopeWarned = useRef(false);
+  const narrow = useNarrow();
+
+  /** The folder value the API expects for the current view: label views ignore archiving (ADR 0010). */
+  const apiFolder = useCallback((): ApiFolder => (selectedLabelRef.current ? "all" : folderRef.current), []);
 
   const loadTriage = useCallback(async (list: EmailDto[]) => {
     const results = await Promise.all(list.map((e) => api.getTriageResult(e.id)));
@@ -82,9 +109,17 @@ function App() {
     setTriageByEmail((prev) => ({ ...prev, ...byId }));
   }, []);
 
-  const refreshCounts = useCallback(async (accountId: number | null) => {
-    setCounts(await api.emailCounts(accountId ?? undefined, selectedLabelRef.current));
-  }, []);
+  const refreshCounts = useCallback(
+    async (accountId: number | null) => {
+      const [view, folders] = await Promise.all([
+        api.emailCounts(accountId ?? undefined, selectedLabelRef.current, apiFolder()),
+        api.folderCounts(accountId ?? undefined),
+      ]);
+      setCounts(view);
+      setFolderCounts(folders);
+    },
+    [apiFolder],
+  );
 
   const refreshLabels = useCallback(async (accountId: number | null) => {
     setLabels(await api.listLabels(accountId ?? undefined));
@@ -93,18 +128,18 @@ function App() {
   const refreshEmails = useCallback(
     async (accountId: number | null) => {
       const limit = Math.max(PAGE_SIZE, loadedRef.current);
-      const list = await api.listEmails(accountId ?? undefined, limit, 0, selectedLabelRef.current);
+      const list = await api.listEmails(accountId ?? undefined, limit, 0, selectedLabelRef.current, apiFolder());
       loadedRef.current = list.length;
       setEmails(list);
       await Promise.all([loadTriage(list), refreshCounts(accountId)]);
     },
-    [loadTriage, refreshCounts],
+    [apiFolder, loadTriage, refreshCounts],
   );
 
   const loadOlder = useCallback(async () => {
     setLoadingMore(true);
     try {
-      const more = await api.listEmails(selectedAccountId ?? undefined, PAGE_SIZE, loadedRef.current, selectedLabelRef.current);
+      const more = await api.listEmails(selectedAccountId ?? undefined, PAGE_SIZE, loadedRef.current, selectedLabelRef.current, apiFolder());
       setEmails((prev) => {
         const seen = new Set(prev.map((e) => e.id));
         const merged = [...prev, ...more.filter((e) => !seen.has(e.id))];
@@ -117,7 +152,7 @@ function App() {
     } finally {
       setLoadingMore(false);
     }
-  }, [selectedAccountId, loadTriage]);
+  }, [selectedAccountId, apiFolder, loadTriage]);
 
   useEffect(() => {
     api.listAccounts().then(setAccounts).catch((e) => setError(String(e)));
@@ -146,7 +181,7 @@ function App() {
   useEffect(() => {
     loadedRef.current = 0;
     refreshEmails(selectedAccountId).catch((e) => setError(String(e)));
-  }, [selectedAccountId, selectedLabelId, refreshEmails]);
+  }, [selectedAccountId, selectedLabelId, folder, refreshEmails]);
 
   useEffect(() => {
     refreshLabels(selectedAccountId).catch(() => {});
@@ -158,6 +193,8 @@ function App() {
       refreshEmails(selectedAccountId).catch(() => {});
     }
   }, [syncProgress, selectedAccountId, refreshEmails]);
+
+  const selectedEmailId = pane.kind === "thread" ? pane.emailId : null;
 
   // Search results can reference emails outside the loaded window; fetch on demand.
   useEffect(() => {
@@ -184,7 +221,6 @@ function App() {
   };
 
   // --- Search (ADR 0004/0006): scoped to the current view, debounced as you type, last request wins.
-  // Deliberately not routed through withBusy: that would disable the input mid-keystroke.
   const cancelPendingSearch = useCallback(() => {
     if (searchTimer.current !== null) {
       window.clearTimeout(searchTimer.current);
@@ -256,7 +292,6 @@ function App() {
     runSearch(searchInput);
   }, [runSearch, searchInput]);
 
-  // Drop a pending debounce if the list unmounts.
   useEffect(() => () => cancelPendingSearch(), [cancelPendingSearch]);
 
   const setRead = useCallback(
@@ -286,7 +321,7 @@ function App() {
   );
 
   const openEmail = (emailId: number) => {
-    setSelectedEmailId(emailId);
+    setPane({ kind: "thread", emailId });
     const e = emails.find((x) => x.id === emailId) ?? extraEmails[emailId];
     if (e && (e.thread_unread > 0 || !e.is_read)) setRead(emailId, true);
   };
@@ -298,11 +333,9 @@ function App() {
       delete next[emailId];
       return next;
     });
-    const started = performance.now();
     try {
       const result = await api.triageEmail(emailId);
       setTriageByEmail((prev) => ({ ...prev, [emailId]: result }));
-      setAnalysisMs((prev) => ({ ...prev, [emailId]: performance.now() - started }));
     } catch (e) {
       setAnalysisErrors((prev) => ({ ...prev, [emailId]: String(e) }));
     } finally {
@@ -315,7 +348,7 @@ function App() {
   }, []);
 
   const selectedEmail =
-    emails.find((e) => e.id === selectedEmailId) ?? (selectedEmailId ? extraEmails[selectedEmailId] ?? null : null);
+    (selectedEmailId && emails.find((e) => e.id === selectedEmailId)) || (selectedEmailId ? extraEmails[selectedEmailId] ?? null : null);
   const selectedTriage = selectedEmailId ? triageByEmail[selectedEmailId] ?? null : null;
   const modelReady = modelStatus.state === "ready";
 
@@ -334,9 +367,42 @@ function App() {
     setEmails((prev) => prev.map((e) => (e.id === emailId ? { ...e, label_ids: labelIds } : e)));
     setExtraEmails((prev) => (prev[emailId] ? { ...prev, [emailId]: { ...prev[emailId], label_ids: labelIds } } : prev));
   };
-  const quarantineCount = emails.filter((e) => effectiveRisk(triageByEmail[e.id]) === "danger").length;
-  const folderEmails = folder === "quarantine" ? emails.filter((e) => effectiveRisk(triageByEmail[e.id]) === "danger") : emails;
   const analyzing = analyzingIds.size > 0 || progress !== null;
+
+  const viewTitle = selectedLabel
+    ? selectedLabel.name
+    : folder === "quarantine"
+      ? "Quarantine"
+      : folder === "flagged"
+        ? "Flagged"
+        : folder === "archive"
+          ? "Archive"
+          : "Inbox";
+
+  /** Removes a thread from the loaded list and moves the reading pane to its neighbour. */
+  const dropThreadFromList = (emailId: number) => {
+    const idx = emails.findIndex((e) => e.id === emailId);
+    const threadId = emails[idx]?.gmail_thread_id ?? null;
+    const remaining = emails.filter((e) => e.id !== emailId && (threadId === null || e.gmail_thread_id !== threadId));
+    setEmails(remaining);
+    loadedRef.current = remaining.length;
+    if (pane.kind === "thread" && pane.emailId === emailId) {
+      const next = remaining[Math.min(idx, remaining.length - 1)];
+      setPane(next && !narrow ? { kind: "thread", emailId: next.id } : { kind: "empty" });
+      if (next && !narrow && next.thread_unread > 0) setRead(next.id, true);
+    }
+  };
+
+  const archiveThread = async (emailId: number, archived: boolean) => {
+    const res = await api.archiveThread(emailId, archived);
+    // The thread leaves the current view unless this is a label view (labels ignore archiving).
+    if (!selectedLabelId) dropThreadFromList(emailId);
+    refreshCounts(selectedAccountId).catch(() => {});
+    if (res.warning && !scopeWarned.current) {
+      scopeWarned.current = true;
+      setNotice(res.warning);
+    }
+  };
 
   const doSync = () =>
     withBusy(async () => {
@@ -353,7 +419,6 @@ function App() {
     });
 
   // Quiet background sync: on launch (once accounts are known) and every AUTO_SYNC_MS.
-  // Doesn't take the busy lock, so the UI stays usable; progress shows in the badge.
   const autoSync = useCallback(async () => {
     if (syncingRef.current || accounts.length === 0) return;
     syncingRef.current = true;
@@ -380,6 +445,7 @@ function App() {
     // Re-arm only when the set of accounts changes, not on every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accounts.length]);
+
   const doAddAccount = () =>
     withBusy(async () => {
       await api.addAccount();
@@ -389,47 +455,51 @@ function App() {
     withBusy(async () => {
       await api.removeAccount(accountId);
       setAccounts(await api.listAccounts());
-      setSelectedEmailId(null);
+      setPane({ kind: "empty" });
       clearSearch();
       if (selectedAccountId === accountId) setSelectedAccountId(null);
       else await refreshEmails(selectedAccountId);
     });
 
+  const closePane = () => setPane({ kind: "empty" });
+  const showList = !narrow || pane.kind === "empty";
+  const showPane = !narrow || pane.kind !== "empty";
+
   return (
-    <div className="app-shell">
+    <div className={`app-shell ${narrow ? "is-narrow" : ""}`}>
       <Sidebar
         accounts={accounts}
         selectedAccountId={selectedAccountId}
         onSelectAccount={(id) => {
           setSelectedAccountId(id);
-          setSelectedEmailId(null);
+          setPane({ kind: "empty" });
           clearSearch();
         }}
         onAddAccount={doAddAccount}
         onRemoveAccount={doRemoveAccount}
         onSync={doSync}
-        folder={folder}
+        onCompose={() => setPane({ kind: "compose" })}
+        composing={pane.kind === "compose"}
+        folder={selectedLabelId ? null : folder}
         onSelectFolder={(f) => {
           setFolder(f);
           setSelectedLabelId(null);
-          setSelectedEmailId(null);
+          setPane({ kind: "empty" });
           clearSearch();
         }}
         labels={labels}
         selectedLabelId={selectedLabelId}
         onSelectLabel={(id) => {
           setSelectedLabelId(id);
-          setFolder("inbox");
-          setSelectedEmailId(null);
+          setPane({ kind: "empty" });
           clearSearch();
         }}
         onSaveLabelSettings={async (labelId, description, autoApply) => {
           const updated = await api.setLabelSettings(labelId, description, autoApply);
-          setLabels((prev) => prev.map((l) => (l.id === labelId ? updated : l)));
+          setLabels((prev) => prev.map((l) => (l.id === labelId ? { ...updated, thread_count: l.thread_count } : l)));
         }}
-        counts={{ inboxTotal: counts.total, inboxUnread: counts.unread, quarantine: quarantineCount }}
+        counts={folderCounts}
         modelStatus={modelStatus}
-        embedModelStatus={embedModelStatus}
         busy={busy}
         analyzing={analyzing}
         progress={progress}
@@ -460,95 +530,125 @@ function App() {
         }
       />
 
-      <main className="content">
-        {error && (
-          <div className="error-banner sm-fade" role="alert">
-            <span className="mono error-label">ERROR</span>
-            <span className="error-text">{error}</span>
-            <button type="button" className="btn btn-mini mono" onClick={() => setError(null)}>
-              DISMISS
-            </button>
-          </div>
-        )}
-        {notice && (
-          <div className="notice-banner sm-fade" role="status">
-            <span className="mono notice-label">NOTICE</span>
-            <span className="error-text">{notice}</span>
-            <button type="button" className="btn btn-mini mono" onClick={() => setNotice(null)}>
-              DISMISS
-            </button>
-          </div>
-        )}
+      {showList && (
+        <EmailList
+          title={viewTitle}
+          folder={selectedLabelId ? "all" : folder}
+          labelsById={labelsById}
+          emails={emails}
+          total={counts.total}
+          unreadCount={counts.unread}
+          hasMore={emails.length < counts.total}
+          loadingMore={loadingMore}
+          onLoadMore={loadOlder}
+          accountEmails={accountEmails}
+          triageByEmail={triageByEmail}
+          filter={filter}
+          onFilter={setFilter}
+          selectedEmailId={selectedEmailId}
+          onOpen={openEmail}
+          search={{
+            semanticEnabled: embedModelStatus.state === "ready",
+            input: searchInput,
+            query: searchQuery,
+            results: searchResults,
+            loading: searchLoading,
+            onInput: onSearchInput,
+            onSubmit: onSearchSubmit,
+            onClear: clearSearch,
+          }}
+          busy={busy}
+          hasAccounts={accounts.length > 0}
+          onAddAccount={doAddAccount}
+          onSync={doSync}
+        />
+      )}
 
-        {selectedEmail ? (
-          <EmailDetail
-            key={selectedEmail.id}
-            email={selectedEmail}
-            userEmail={accountEmails[selectedEmail.account_id] ?? null}
-            triage={selectedTriage}
-            analyzing={analyzingIds.has(selectedEmail.id)}
-            analysisMs={analysisMs[selectedEmail.id] ?? null}
-            analysisError={analysisErrors[selectedEmail.id] ?? null}
-            modelReady={modelReady}
-            onOpenSettings={() => setSettingsOpen(true)}
-            onAnalyze={analyze}
-            onBack={() => setSelectedEmailId(null)}
-            onToggleRead={setRead}
-            labels={labels}
-            onApplyLabels={async (emailId, add, remove) => {
-              const res = await api.applyLabels(emailId, add, remove);
-              patchEmailLabels(emailId, res.label_ids);
-              if (res.warning && !scopeWarned.current) {
-                scopeWarned.current = true;
-                setNotice(res.warning);
-              }
-            }}
-            onSuggestLabels={(emailId) => api.suggestLabels(emailId)}
-            onSetDone={async (emailId, done) => {
-              await api.setDone(emailId, done);
-              setTriageByEmail((prev) => (prev[emailId] ? { ...prev, [emailId]: { ...prev[emailId], done } } : prev));
-            }}
-            onSetUserRisk={async (emailId, risk) => {
-              const updated = await api.setUserRisk(emailId, risk);
-              setTriageByEmail((prev) => ({ ...prev, [emailId]: updated }));
-            }}
-            onSaveDraft={async (emailId, body, replyAll) => {
-              await api.createGmailDraft(emailId, body, replyAll);
-            }}
-            onDraftWithAi={(emailId, instructions, previousDraft) => api.draftReply(emailId, instructions, previousDraft)}
-          />
-        ) : (
-          <EmailList
-            title={selectedLabel ? selectedLabel.name : folder === "quarantine" ? "Quarantine" : "Inbox"}
-            labelsById={labelsById}
-            emails={folderEmails}
-            total={folder === "quarantine" ? quarantineCount : counts.total}
-            unreadCount={folder === "quarantine" ? folderEmails.filter((e) => !e.is_read).length : counts.unread}
-            hasMore={folder === "inbox" && emails.length < counts.total}
-            loadingMore={loadingMore}
-            onLoadMore={loadOlder}
-            accountEmails={accountEmails}
-            triageByEmail={triageByEmail}
-            filter={filter}
-            onFilter={setFilter}
-            onOpen={openEmail}
-            search={{
-              semanticEnabled: embedModelStatus.state === "ready",
-              input: searchInput,
-              query: searchQuery,
-              results: searchResults,
-              loading: searchLoading,
-              onInput: onSearchInput,
-              onSubmit: onSearchSubmit,
-              onClear: clearSearch,
-            }}
-            busy={busy}
-            hasAccounts={accounts.length > 0}
-            onAddAccount={doAddAccount}
-            onSync={doSync}
-          />
-        )}
-      </main>
+      {showPane && (
+        <main className="reading-pane">
+          {error && (
+            <div className="banner banner-error sm-fade" role="alert">
+              <span className="mono banner-label">error</span>
+              <span className="banner-text">{error}</span>
+              <button type="button" className="link-action" onClick={() => setError(null)}>
+                Dismiss
+              </button>
+            </div>
+          )}
+          {notice && (
+            <div className="banner banner-notice sm-fade" role="status">
+              <span className="mono banner-label">notice</span>
+              <span className="banner-text">{notice}</span>
+              <button type="button" className="link-action" onClick={() => setNotice(null)}>
+                Dismiss
+              </button>
+            </div>
+          )}
+
+          {pane.kind === "compose" ? (
+            <Compose
+              accounts={accounts}
+              defaultAccountId={selectedAccountId ?? (accounts.length === 1 ? accounts[0].id : null)}
+              narrow={narrow}
+              onClose={closePane}
+              onSend={async (accountId, to, cc, subject, body) => {
+                await api.sendMessage(accountId, to, cc, subject, body);
+              }}
+            />
+          ) : selectedEmail ? (
+            <EmailDetail
+              key={selectedEmail.id}
+              email={selectedEmail}
+              userEmail={accountEmails[selectedEmail.account_id] ?? null}
+              triage={selectedTriage}
+              analyzing={analyzingIds.has(selectedEmail.id)}
+              analysisError={analysisErrors[selectedEmail.id] ?? null}
+              modelReady={modelReady}
+              narrow={narrow}
+              archived={folder === "archive" && !selectedLabelId ? true : !selectedEmail.label_ids.includes("INBOX") && selectedEmail.label_ids.length > 0}
+              onOpenSettings={() => setSettingsOpen(true)}
+              onAnalyze={analyze}
+              onClose={closePane}
+              onToggleRead={setRead}
+              onArchive={archiveThread}
+              labels={labels}
+              onApplyLabels={async (emailId, add, remove) => {
+                const res = await api.applyLabels(emailId, add, remove);
+                patchEmailLabels(emailId, res.label_ids);
+                if (res.warning && !scopeWarned.current) {
+                  scopeWarned.current = true;
+                  setNotice(res.warning);
+                }
+              }}
+              onSuggestLabels={(emailId) => api.suggestLabels(emailId)}
+              onSetDone={async (emailId, done) => {
+                await api.setDone(emailId, done);
+                setTriageByEmail((prev) => (prev[emailId] ? { ...prev, [emailId]: { ...prev[emailId], done } } : prev));
+              }}
+              onSetUserRisk={async (emailId, risk) => {
+                const updated = await api.setUserRisk(emailId, risk);
+                setTriageByEmail((prev) => ({ ...prev, [emailId]: updated }));
+                refreshCounts(selectedAccountId).catch(() => {});
+              }}
+              onSendReply={async (emailId, body, replyAll) => {
+                await api.createGmailDraft(emailId, body, replyAll, true);
+              }}
+              onDraftWithAi={(emailId, instructions, previousDraft) => api.draftReply(emailId, instructions, previousDraft)}
+            />
+          ) : (
+            <div className="pane-empty sm-fade">
+              {selectedEmailId ? (
+                <p className="mono pane-empty-text">Loading…</p>
+              ) : (
+                <>
+                  <p className="pane-empty-title">Nothing open</p>
+                  <p className="pane-empty-text">Pick a conversation on the left, or start a new message.</p>
+                </>
+              )}
+            </div>
+          )}
+        </main>
+      )}
     </div>
   );
 }

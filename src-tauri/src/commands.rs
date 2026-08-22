@@ -181,6 +181,40 @@ pub fn list_accounts(state: State<'_, AppState>) -> Result<Vec<AccountDto>, Stri
     rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
 }
 
+/// Thread-level facts every folder/count query is built on. One row per conversation.
+/// `?1` = account filter (NULL = all), `?2` = label filter (NULL = none).
+///
+/// A thread is *archived* when label data has been recorded for it and no message carries
+/// `INBOX` (rows synced before `label_ids` existed stay in the inbox). `risk_level` is the
+/// worst effective risk in the thread: 2 = danger, 1 = caution, 0 = clean or unanalysed.
+const THREADS_CTE: &str = "WITH threads AS (
+    SELECT e.account_id, e.gmail_thread_id,
+           COUNT(*) AS thread_count,
+           SUM(CASE WHEN e.is_read = 0 THEN 1 ELSE 0 END) AS thread_unread,
+           MAX(CASE WHEN e.label_ids LIKE '%\"INBOX\"%' THEN 1 ELSE 0 END) AS in_inbox,
+           MAX(CASE WHEN e.label_ids IS NOT NULL THEN 1 ELSE 0 END) AS has_labels,
+           MAX(CASE WHEN COALESCE(tr.user_risk, tr.risk) = 'danger' THEN 2
+                    WHEN COALESCE(tr.user_risk, tr.risk) = 'caution' THEN 1 ELSE 0 END) AS risk_level,
+           MAX(CASE WHEN ?2 IS NOT NULL AND e.label_ids LIKE '%\"' || ?2 || '\"%' THEN 1 ELSE 0 END) AS has_label
+    FROM emails e LEFT JOIN triage_results tr ON tr.email_id = e.id
+    WHERE (?1 IS NULL OR e.account_id = ?1)
+    GROUP BY e.account_id, e.gmail_thread_id
+)";
+
+/// SQL predicate (over the `threads` CTE alias `t`) for a sidebar folder. Unknown names
+/// are treated as "inbox". `all` is used for label views and search, which ignore archiving.
+fn folder_predicate(folder: Option<&str>) -> &'static str {
+    match folder.unwrap_or("inbox") {
+        "archive" => "(t.has_labels = 1 AND t.in_inbox = 0)",
+        "flagged" => "NOT (t.has_labels = 1 AND t.in_inbox = 0) AND t.risk_level >= 1",
+        "quarantine" => "NOT (t.has_labels = 1 AND t.in_inbox = 0) AND t.risk_level = 2",
+        "all" => "1",
+        _ => "NOT (t.has_labels = 1 AND t.in_inbox = 0)",
+    }
+}
+
+/// One row per conversation (its latest message), newest first, scoped to an account, a
+/// folder (`inbox` default, `quarantine`, `flagged`, `archive`, `all`) and optionally a label.
 #[tauri::command]
 pub fn list_emails(
     state: State<'_, AppState>,
@@ -188,32 +222,29 @@ pub fn list_emails(
     limit: Option<u32>,
     offset: Option<u32>,
     label_id: Option<String>,
+    folder: Option<String>,
 ) -> Result<Vec<EmailDto>, String> {
     let limit = limit.unwrap_or(100).clamp(1, 500);
     let offset = offset.unwrap_or(0);
     let db = state.db.lock().map_err(|e| e.to_string())?;
-    let mut stmt = db
-        .prepare(
-            // One row per conversation: the latest message of each thread, newest first.
-            "SELECT e.id, e.account_id, e.sender, e.subject, e.body_text, e.received_at, e.is_read, e.to_addrs, e.cc_addrs, e.body_html,
-                    e.gmail_thread_id,
-                    (SELECT COUNT(*) FROM emails t WHERE t.account_id = e.account_id AND t.gmail_thread_id = e.gmail_thread_id),
-                    (SELECT COUNT(*) FROM emails t WHERE t.account_id = e.account_id AND t.gmail_thread_id = e.gmail_thread_id AND t.is_read = 0),
-                    e.label_ids
-             FROM emails e
-             WHERE (?1 IS NULL OR e.account_id = ?1)
-               AND e.id = (SELECT t2.id FROM emails t2
-                           WHERE t2.account_id = e.account_id AND t2.gmail_thread_id = e.gmail_thread_id
-                           ORDER BY t2.received_at DESC, t2.id DESC LIMIT 1)
-               AND (?4 IS NULL OR EXISTS (SELECT 1 FROM emails t3
-                           WHERE t3.account_id = e.account_id AND t3.gmail_thread_id = e.gmail_thread_id
-                             AND t3.label_ids LIKE '%\"' || ?4 || '\"%'))
-             ORDER BY e.received_at DESC
-             LIMIT ?2 OFFSET ?3",
-        )
-        .map_err(|e| e.to_string())?;
+    let sql = format!(
+        "{THREADS_CTE}
+         SELECT e.id, e.account_id, e.sender, e.subject, e.body_text, e.received_at, e.is_read, e.to_addrs, e.cc_addrs, e.body_html,
+                e.gmail_thread_id, t.thread_count, t.thread_unread, e.label_ids
+         FROM emails e
+         JOIN threads t ON t.account_id = e.account_id AND t.gmail_thread_id = e.gmail_thread_id
+         WHERE e.id = (SELECT t2.id FROM emails t2
+                       WHERE t2.account_id = e.account_id AND t2.gmail_thread_id = e.gmail_thread_id
+                       ORDER BY t2.received_at DESC, t2.id DESC LIMIT 1)
+           AND (?2 IS NULL OR t.has_label = 1)
+           AND {}
+         ORDER BY e.received_at DESC
+         LIMIT ?3 OFFSET ?4",
+        folder_predicate(folder.as_deref())
+    );
+    let mut stmt = db.prepare(&sql).map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map(params![account_id, limit, offset, label_id], |row| {
+        .query_map(params![account_id, label_id, limit, offset], |row| {
             Ok(EmailDto {
                 id: row.get(0)?,
                 account_id: row.get(1)?,
@@ -725,6 +756,8 @@ pub struct LabelDto {
     pub color_fg: Option<String>,
     pub description: Option<String>,
     pub auto_apply: bool,
+    /// Conversations in this account carrying the label (ADR 0013).
+    pub thread_count: u32,
 }
 
 fn row_to_label(row: &rusqlite::Row<'_>) -> rusqlite::Result<LabelDto> {
@@ -738,10 +771,13 @@ fn row_to_label(row: &rusqlite::Row<'_>) -> rusqlite::Result<LabelDto> {
         color_fg: row.get(6)?,
         description: row.get(7)?,
         auto_apply: row.get(8)?,
+        thread_count: row.get::<_, i64>(9)? as u32,
     })
 }
 
-const LABEL_COLS: &str = "id, account_id, gmail_label_id, name, label_type, color_bg, color_fg, description, auto_apply";
+const LABEL_COLS: &str = "id, account_id, gmail_label_id, name, label_type, color_bg, color_fg, description, auto_apply,
+    (SELECT COUNT(DISTINCT e.gmail_thread_id) FROM emails e
+      WHERE e.account_id = labels.account_id AND e.label_ids LIKE '%\"' || labels.gmail_label_id || '\"%')";
 
 /// The user's own (non-system) labels, optionally for one account.
 #[tauri::command]
@@ -1023,23 +1059,169 @@ pub struct EmailCounts {
     pub unread: u32,
 }
 
+/// Threads and unread threads in the current view (account + folder + optional label).
 #[tauri::command]
-pub fn email_counts(state: State<'_, AppState>, account_id: Option<i64>, label_id: Option<String>) -> Result<EmailCounts, String> {
+pub fn email_counts(
+    state: State<'_, AppState>,
+    account_id: Option<i64>,
+    label_id: Option<String>,
+    folder: Option<String>,
+) -> Result<EmailCounts, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
-    db.query_row(
-        "SELECT COUNT(DISTINCT account_id || ':' || gmail_thread_id),
-                COUNT(DISTINCT CASE WHEN is_read = 0 THEN account_id || ':' || gmail_thread_id END)
-         FROM emails WHERE (?1 IS NULL OR account_id = ?1)
-           AND (?2 IS NULL OR label_ids LIKE '%\"' || ?2 || '\"%')",
-        params![account_id, label_id],
-        |row| {
-            Ok(EmailCounts {
-                total: row.get::<_, i64>(0)? as u32,
-                unread: row.get::<_, i64>(1)? as u32,
-            })
-        },
-    )
+    let sql = format!(
+        "{THREADS_CTE}
+         SELECT COUNT(*), COALESCE(SUM(CASE WHEN t.thread_unread > 0 THEN 1 ELSE 0 END), 0)
+         FROM threads t WHERE (?2 IS NULL OR t.has_label = 1) AND {}",
+        folder_predicate(folder.as_deref())
+    );
+    db.query_row(&sql, params![account_id, label_id], |row| {
+        Ok(EmailCounts {
+            total: row.get::<_, i64>(0)? as u32,
+            unread: row.get::<_, i64>(1)? as u32,
+        })
+    })
     .map_err(|e| e.to_string())
+}
+
+/// Sidebar counts for every folder in one round trip (ADR 0013).
+#[derive(Debug, Serialize)]
+pub struct FolderCounts {
+    pub inbox_total: u32,
+    pub inbox_unread: u32,
+    pub quarantine: u32,
+    pub flagged: u32,
+    pub archive: u32,
+}
+
+#[tauri::command]
+pub fn folder_counts(state: State<'_, AppState>, account_id: Option<i64>) -> Result<FolderCounts, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let sql = format!(
+        "{THREADS_CTE}
+         SELECT
+           COALESCE(SUM(CASE WHEN NOT (t.has_labels = 1 AND t.in_inbox = 0) THEN 1 ELSE 0 END), 0),
+           COALESCE(SUM(CASE WHEN NOT (t.has_labels = 1 AND t.in_inbox = 0) AND t.thread_unread > 0 THEN 1 ELSE 0 END), 0),
+           COALESCE(SUM(CASE WHEN NOT (t.has_labels = 1 AND t.in_inbox = 0) AND t.risk_level = 2 THEN 1 ELSE 0 END), 0),
+           COALESCE(SUM(CASE WHEN NOT (t.has_labels = 1 AND t.in_inbox = 0) AND t.risk_level >= 1 THEN 1 ELSE 0 END), 0),
+           COALESCE(SUM(CASE WHEN (t.has_labels = 1 AND t.in_inbox = 0) THEN 1 ELSE 0 END), 0)
+         FROM threads t"
+    );
+    db.query_row(&sql, params![account_id, Option::<String>::None], |row| {
+        Ok(FolderCounts {
+            inbox_total: row.get::<_, i64>(0)? as u32,
+            inbox_unread: row.get::<_, i64>(1)? as u32,
+            quarantine: row.get::<_, i64>(2)? as u32,
+            flagged: row.get::<_, i64>(3)? as u32,
+            archive: row.get::<_, i64>(4)? as u32,
+        })
+    })
+    .map_err(|e| e.to_string())
+}
+
+/// Archives (removes `INBOX` from) or restores every message of the thread `email_id`
+/// belongs to: locally at once, then best effort on Gmail (ADR 0010).
+#[derive(Debug, Serialize)]
+pub struct ArchiveResult {
+    pub archived: bool,
+    pub warning: Option<String>,
+}
+
+#[tauri::command]
+pub async fn archive_thread(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    email_id: i64,
+    archived: bool,
+) -> Result<ArchiveResult, String> {
+    let (message_ids, account_email): (Vec<String>, String) = {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        let (account_id, thread_id, account_email): (i64, String, String) = db
+            .query_row(
+                "SELECT e.account_id, e.gmail_thread_id, a.email_address
+                 FROM emails e JOIN accounts a ON a.id = e.account_id WHERE e.id = ?1",
+                params![email_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .map_err(|e| e.to_string())?;
+        let mut stmt = db
+            .prepare("SELECT gmail_message_id FROM emails WHERE account_id = ?1 AND gmail_thread_id = ?2")
+            .map_err(|e| e.to_string())?;
+        let ids = stmt
+            .query_map(params![account_id, thread_id], |row| row.get::<_, String>(0))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        let inbox = vec!["INBOX".to_string()];
+        for mid in &ids {
+            if archived {
+                update_label_ids(&db, account_id, mid, &[], &inbox)?;
+            } else {
+                update_label_ids(&db, account_id, mid, &inbox, &[])?;
+            }
+        }
+        (ids, account_email)
+    };
+
+    let gmail = async {
+        let config = load_oauth_config(&app)?;
+        let refresh_token = keyring_store::get_refresh_token(&account_email)
+            .map_err(|e| format!("no stored refresh token: {e}"))?;
+        let access_token = oauth::refresh_access_token(&config, &refresh_token).await?;
+        let client = GmailClient::new(access_token);
+        for id in &message_ids {
+            if archived {
+                client.modify_labels(id, &[], &["INBOX"]).await?;
+            } else {
+                client.modify_labels(id, &["INBOX"], &[]).await?;
+            }
+        }
+        Ok::<(), String>(())
+    };
+    let warning = match gmail.await {
+        Ok(()) => None,
+        Err(e) => Some(format!(
+            "{} here, but Gmail wasn't updated: {e}",
+            if archived { "Archived" } else { "Moved to inbox" }
+        )),
+    };
+    Ok(ArchiveResult { archived, warning })
+}
+
+/// Composes and sends a new message from `account_id` (ADR 0010). The draft is created
+/// then sent through `drafts/send`, the same path the mailto unsubscribe uses.
+#[tauri::command]
+pub async fn send_message(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    account_id: i64,
+    to: String,
+    cc: Option<String>,
+    subject: String,
+    body: String,
+) -> Result<(), String> {
+    let to = to.trim().to_string();
+    if to.is_empty() || !to.contains('@') {
+        return Err("Add at least one recipient address".to_string());
+    }
+    if body.trim().is_empty() {
+        return Err("The message is empty".to_string());
+    }
+    let account_email: String = {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        conn.query_row("SELECT email_address FROM accounts WHERE id = ?1", params![account_id], |row| row.get(0))
+            .map_err(|e| e.to_string())?
+    };
+    let config = load_oauth_config(&app)?;
+    let refresh_token = keyring_store::get_refresh_token(&account_email)
+        .map_err(|e| format!("no stored refresh token: {e}"))?;
+    let access_token = oauth::refresh_access_token(&config, &refresh_token).await?;
+    let client = GmailClient::new(access_token);
+    let cc = cc.map(|c| c.trim().to_string()).filter(|c| !c.is_empty());
+    let subject = if subject.trim().is_empty() { "(no subject)".to_string() } else { subject.trim().to_string() };
+    let draft_id = client
+        .create_draft(&account_email, &to, cc.as_deref(), &subject, &body, None, None)
+        .await?;
+    client.send_draft(&draft_id).await
 }
 
 #[derive(Debug, Serialize)]
@@ -1396,10 +1578,9 @@ pub fn get_triage_result(
     Ok(result)
 }
 
-/// Saves a draft reply to the real Gmail Drafts folder via the already-granted
-/// `gmail.compose` scope. This app has no send scope and never sends mail.
+/// Creates a reply draft in Gmail and, when `send` is true, sends it at once (ADR 0010).
 /// Refuses on DANGER-risk emails even if somehow called - the UI never shows
-/// a save button for those, but this is a deliberate defense in depth.
+/// a reply control for those, but this is a deliberate defense in depth.
 #[tauri::command]
 pub async fn create_gmail_draft(
     app: AppHandle,
@@ -1407,6 +1588,7 @@ pub async fn create_gmail_draft(
     email_id: i64,
     body_override: Option<String>,
     reply_all: Option<bool>,
+    send: Option<bool>,
 ) -> Result<String, String> {
     let config = load_oauth_config(&app)?;
 
@@ -1504,12 +1686,17 @@ pub async fn create_gmail_draft(
         )
         .await?;
 
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
-    conn.execute(
-        "UPDATE triage_results SET gmail_draft_id = ?1 WHERE email_id = ?2",
-        params![draft_id, email_id],
-    )
-    .map_err(|e| e.to_string())?;
+    {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE triage_results SET gmail_draft_id = ?1 WHERE email_id = ?2",
+            params![draft_id, email_id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    if send.unwrap_or(false) {
+        client.send_draft(&draft_id).await?;
+    }
 
     Ok(draft_id)
 }
