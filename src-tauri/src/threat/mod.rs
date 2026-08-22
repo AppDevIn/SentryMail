@@ -152,7 +152,7 @@ pub fn extract_urls(body_text: &str, body_html: Option<&str>) -> Vec<String> {
     };
 
     for chunk in body_text.split(|c: char| c.is_whitespace() || c == '<' || c == '>' || c == '"' || c == '\'') {
-        if chunk.starts_with("http://") || chunk.starts_with("https://") {
+        if looks_like_url(chunk) {
             push(chunk);
         }
     }
@@ -160,12 +160,20 @@ pub fn extract_urls(body_text: &str, body_html: Option<&str>) -> Vec<String> {
     if let Some(html) = body_html {
         // Anchor/image targets, plus anything else quoted that looks like a URL.
         for chunk in html.split(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == '(' || c == ')' || c == '<' || c == '>') {
-            if chunk.starts_with("http://") || chunk.starts_with("https://") {
+            if looks_like_url(chunk) {
                 push(chunk);
             }
         }
     }
     out
+}
+
+/// Scheme detection is case-insensitive: URL schemes are, and a link written `HTTP://...`
+/// would otherwise be skipped entirely - a trivial way to evade the whole check.
+fn looks_like_url(chunk: &str) -> bool {
+    let n = chunk.len().min(8);
+    let head = chunk[..n].to_ascii_lowercase();
+    head.starts_with("http://") || head.starts_with("https://")
 }
 
 /// Looks each URL up in the feeds. Exact match first; host match only if the host was promoted.
@@ -270,4 +278,168 @@ pub fn link_hits(db: &Mutex<Connection>, email_id: i64) -> Result<Vec<LinkHitDto
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string())?;
     Ok(rows)
+}
+
+#[cfg(test)]
+mod db_tests {
+    use super::*;
+    use crate::db::schema;
+
+    /// An in-memory database with the real schema and one account + email, so these exercise
+    /// the actual SQL rather than a mock of it.
+    fn fixture(body_text: &str, body_html: Option<&str>, sender: &str) -> (Mutex<Connection>, i64) {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", true).unwrap();
+        schema::run_migrations(&conn).unwrap();
+        conn.execute("INSERT INTO accounts (id, email_address) VALUES (1, 'me@example.com')", [])
+            .unwrap();
+        conn.execute(
+            "INSERT INTO emails (id, account_id, gmail_message_id, gmail_thread_id, sender,
+                                 subject, body_text, body_html, received_at)
+             VALUES (1, 1, 'm1', 't1', ?1, 's', ?2, ?3, '2026-08-22T00:00:00Z')",
+            params![sender, body_text, body_html],
+        )
+        .unwrap();
+        (Mutex::new(conn), 1)
+    }
+
+    #[test]
+    fn exact_url_in_an_email_is_matched_and_stains_the_sender() {
+        let (db, id) = fixture(
+            "Verify now: http://evil.example.com/login?id=1",
+            None,
+            "DBS Security <alerts@evil-sender.com>",
+        );
+        store_feed(&db, Source::PhishTank, &["http://evil.example.com/login?id=1".into()], None).unwrap();
+
+        let hits = scan_email(&db, id).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].match_kind, "exact");
+        assert_eq!(hits[0].source, "phishtank");
+
+        let conn = db.lock().unwrap();
+        assert!(sender_flagged(&conn, 1, "DBS Security <alerts@evil-sender.com>"));
+        // A different sender must not inherit the stain.
+        assert!(!sender_flagged(&conn, 1, "friend@example.com"));
+    }
+
+    #[test]
+    fn url_written_differently_in_the_email_still_matches() {
+        // The canonicalisation contract, end to end through the database.
+        let (db, id) = fixture("go to HTTP://Evil.Example.com:80/login?id=1#top now", None, "a@b.com");
+        store_feed(&db, Source::PhishTank, &["http://evil.example.com/login?id=1".into()], None).unwrap();
+        assert_eq!(scan_email(&db, id).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn uppercase_scheme_does_not_evade_detection() {
+        let (db, id) = fixture("HTTPS://Evil.Example.com/pay", None, "a@b.com");
+        store_feed(&db, Source::PhishTank, &["https://evil.example.com/pay".into()], None).unwrap();
+        assert_eq!(scan_email(&db, id).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn links_hidden_in_html_are_found() {
+        let (db, id) = fixture(
+            "nothing here",
+            Some(r#"<a href="https://evil.example.com/pay">Click for your refund</a>"#),
+            "a@b.com",
+        );
+        store_feed(&db, Source::OpenPhish, &["https://evil.example.com/pay".into()], None).unwrap();
+        let hits = scan_email(&db, id).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].source, "openphish");
+    }
+
+    #[test]
+    fn host_match_only_after_promotion_and_never_for_shared_hosting() {
+        // Three URLs on an attacker domain promotes the host, so an unlisted fourth URL on it hits.
+        let (db, id) = fixture("see http://bad-domain.com/unlisted-page", None, "a@b.com");
+        store_feed(
+            &db,
+            Source::PhishTank,
+            &[
+                "http://bad-domain.com/a".into(),
+                "http://bad-domain.com/b".into(),
+                "http://bad-domain.com/c".into(),
+            ],
+            None,
+        )
+        .unwrap();
+        let hits = scan_email(&db, id).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].match_kind, "host");
+
+        // Same evidence on shared hosting must NOT promote - otherwise one bad tenant
+        // condemns every other site on the domain.
+        let (db2, id2) = fixture("see https://sites.google.com/innocent-project", None, "a@b.com");
+        store_feed(
+            &db2,
+            Source::PhishTank,
+            &[
+                "https://sites.google.com/x".into(),
+                "https://sites.google.com/y".into(),
+                "https://sites.google.com/z".into(),
+            ],
+            None,
+        )
+        .unwrap();
+        assert!(scan_email(&db2, id2).unwrap().is_empty());
+    }
+
+    #[test]
+    fn host_match_alone_does_not_stain_the_sender() {
+        // Host matching is an inference, not a fact; only exact hits are strong enough.
+        let (db, id) = fixture("see http://bad-domain.com/unlisted", None, "maybe@innocent.com");
+        store_feed(
+            &db,
+            Source::PhishTank,
+            &["http://bad-domain.com/a".into(), "http://bad-domain.com/b".into(), "http://bad-domain.com/c".into()],
+            None,
+        )
+        .unwrap();
+        scan_email(&db, id).unwrap();
+        let conn = db.lock().unwrap();
+        assert!(!sender_flagged(&conn, 1, "maybe@innocent.com"));
+    }
+
+    #[test]
+    fn a_failing_refresh_keeps_the_previous_blocklist() {
+        let (db, id) = fixture("http://evil.example.com/login", None, "a@b.com");
+        store_feed(&db, Source::PhishTank, &["http://evil.example.com/login".into()], None).unwrap();
+        record_feed_error(&db, Source::PhishTank, "connection refused").unwrap();
+
+        // Still matched - a down feed must not silently mean "no warnings".
+        assert_eq!(scan_email(&db, id).unwrap().len(), 1);
+        let status = feed_status(&db).unwrap();
+        let pt = status.iter().find(|s| s.source == "phishtank").unwrap();
+        assert_eq!(pt.last_error.as_deref(), Some("connection refused"));
+        assert_eq!(pt.entry_count, 1);
+    }
+
+    #[test]
+    fn refreshing_one_source_does_not_wipe_another() {
+        let (db, id) = fixture("http://a.example/x and http://b.example/y", None, "a@b.com");
+        store_feed(&db, Source::PhishTank, &["http://a.example/x".into()], None).unwrap();
+        store_feed(&db, Source::OpenPhish, &["http://b.example/y".into()], None).unwrap();
+        // Re-running PhishTank must leave OpenPhish's rows intact.
+        store_feed(&db, Source::PhishTank, &["http://a.example/x".into()], None).unwrap();
+        assert_eq!(scan_email(&db, id).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn rescanning_replaces_hits_rather_than_duplicating_them() {
+        let (db, id) = fixture("http://evil.example.com/login", None, "a@b.com");
+        store_feed(&db, Source::PhishTank, &["http://evil.example.com/login".into()], None).unwrap();
+        scan_email(&db, id).unwrap();
+        scan_email(&db, id).unwrap();
+        assert_eq!(link_hits(&db, id).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn clean_mail_produces_no_hits() {
+        let (db, id) = fixture("Lunch at https://maps.google.com/place tomorrow?", None, "a@b.com");
+        store_feed(&db, Source::PhishTank, &["http://evil.example.com/login".into()], None).unwrap();
+        assert!(scan_email(&db, id).unwrap().is_empty());
+    }
 }
