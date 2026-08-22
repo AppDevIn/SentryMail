@@ -1,0 +1,7 @@
+# Claude Code runtime state (not project content)
+.claude/*.lock
+.claude/settings.local.json
+
+# Dependencies / build output
+node_modules/
+dist/

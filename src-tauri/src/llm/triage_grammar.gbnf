@@ -1,0 +1,43 @@
+# NOTE: llama.cpp's GBNF parser ends a top-level rule at the first newline; newlines are
+# only permitted inside parentheses. Every rule body that spans multiple lines below is
+# therefore wrapped in ( ... ) - removing those parens breaks grammar parsing at runtime.
+
+root ::= ( "{" ws
+  "\"type\":" ws type-value "," ws
+  "\"priority\":" ws priority-value "," ws
+  "\"summary\":" ws string "," ws
+  "\"risk\":" ws risk-value "," ws
+  "\"signals\":" ws signals-array "," ws
+  "\"risk_explanation\":" ws string "," ws
+  "\"action\":" ws action-object
+  ws "}" )
+
+ws ::= [ \t\n]*
+
+type-value     ::= "\"action_needed\"" | "\"fyi\"" | "\"scam_risk\"" | "\"personal\"" | "\"newsletter_promo\""
+priority-value ::= "\"high\"" | "\"medium\"" | "\"low\""
+risk-value     ::= "\"safe\"" | "\"caution\"" | "\"danger\""
+
+signal-value ::= ( "\"urgency_pressure\"" | "\"money_request\"" | "\"credential_request\""
+               | "\"sender_mismatch\"" | "\"suspicious_links\"" | "\"emotional_manipulation\""
+               | "\"secrecy_request\"" | "\"inconsistent_formatting\"" )
+
+signals-array ::= "[" ws "]" | "[" ws signal-value (ws "," ws signal-value)* ws "]"
+
+char   ::= [^"\\] | "\\" (["\\/bfnrt] | "u" hex hex hex hex)
+hex    ::= [0-9a-fA-F]
+string ::= "\"" char* "\""
+
+action-object ::= draft-action | warning-action | none-action
+
+draft-action ::= ( "{" ws "\"kind\":\"draft_reply\"" "," ws
+  "\"draft_reply\":" ws string "," ws
+  "\"verify_first\":" ws (string | "null")
+  ws "}" )
+
+warning-action ::= ( "{" ws "\"kind\":\"warning\"" "," ws
+  "\"warning\":" ws string "," ws
+  "\"next_step\":" ws string
+  ws "}" )
+
+none-action ::= "{" ws "\"kind\":\"none\"" ws "}"
