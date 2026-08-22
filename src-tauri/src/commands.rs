@@ -4,6 +4,7 @@ use crate::images::{self, RemoteImageDto};
 use crate::llm::{self, ModelStatus};
 use crate::meetings::{self, MeetingDto};
 use crate::search;
+use crate::threat;
 use crate::triage::{self, TriageResult};
 use crate::unsubscribe::{self, UnsubscribeMethod};
 use crate::AppState;
@@ -40,6 +41,8 @@ pub struct EmailDto {
     pub thread_unread: u32,
     /// Gmail label ids on this message (INBOX, UNREAD, Label_12, ...).
     pub label_ids: Vec<String>,
+    /// True when at least one link in this message matched a known-phishing feed.
+    pub has_phishing_link: bool,
 }
 
 fn parse_label_ids(raw: Option<String>) -> Vec<String> {
@@ -232,7 +235,8 @@ pub fn list_emails(
     let sql = format!(
         "{THREADS_CTE}
          SELECT e.id, e.account_id, e.sender, e.subject, e.body_text, e.received_at, e.is_read, e.to_addrs, e.cc_addrs, e.body_html,
-                e.gmail_thread_id, t.thread_count, t.thread_unread, e.label_ids
+                e.gmail_thread_id, t.thread_count, t.thread_unread, e.label_ids,
+                EXISTS(SELECT 1 FROM email_link_hits h WHERE h.email_id = e.id) AS has_phishing_link
          FROM emails e
          JOIN threads t ON t.account_id = e.account_id AND t.gmail_thread_id = e.gmail_thread_id
          WHERE e.id = (SELECT t2.id FROM emails t2
@@ -262,6 +266,7 @@ pub fn list_emails(
                 thread_count: row.get::<_, i64>(11)? as u32,
                 thread_unread: row.get::<_, i64>(12)? as u32,
                 label_ids: parse_label_ids(row.get::<_, Option<String>>(13)?),
+                has_phishing_link: row.get(14)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -444,6 +449,12 @@ async fn upsert_message(
             params![row_id, a.attachment_id, a.filename, a.mime_type, a.size as i64, a.content_id, a.is_inline],
         )
         .map_err(|e| e.to_string())?;
+    }
+    // `scan_email` takes the lock itself, so release ours first.
+    drop(db);
+    // A threat-scan failure must never break sync: log it and carry on.
+    if let Err(e) = threat::scan_email(&state.db, row_id) {
+        eprintln!("[threat] scan of email {row_id} failed: {e}");
     }
     Ok(is_new)
 }
@@ -1996,7 +2007,8 @@ pub fn get_email(state: State<'_, AppState>, email_id: i64) -> Result<Option<Ema
                     e.gmail_thread_id,
                     (SELECT COUNT(*) FROM emails t WHERE t.account_id = e.account_id AND t.gmail_thread_id = e.gmail_thread_id),
                     (SELECT COUNT(*) FROM emails t WHERE t.account_id = e.account_id AND t.gmail_thread_id = e.gmail_thread_id AND t.is_read = 0),
-                    e.label_ids
+                    e.label_ids,
+                    EXISTS(SELECT 1 FROM email_link_hits h WHERE h.email_id = e.id) AS has_phishing_link
              FROM emails e WHERE e.id = ?1",
             params![email_id],
             |row| {
@@ -2015,6 +2027,7 @@ pub fn get_email(state: State<'_, AppState>, email_id: i64) -> Result<Option<Ema
                     thread_count: row.get::<_, i64>(11)? as u32,
                     thread_unread: row.get::<_, i64>(12)? as u32,
                 label_ids: parse_label_ids(row.get::<_, Option<String>>(13)?),
+                has_phishing_link: row.get(14)?,
                 })
             },
         )
@@ -2030,7 +2043,8 @@ pub fn list_thread_messages(state: State<'_, AppState>, email_id: i64) -> Result
     let mut stmt = conn
         .prepare(
             "SELECT e.id, e.account_id, e.sender, e.subject, e.body_text, e.received_at, e.is_read, e.to_addrs, e.cc_addrs, e.body_html,
-                    e.gmail_thread_id, 1, CASE WHEN e.is_read THEN 0 ELSE 1 END, e.label_ids
+                    e.gmail_thread_id, 1, CASE WHEN e.is_read THEN 0 ELSE 1 END, e.label_ids,
+                    EXISTS(SELECT 1 FROM email_link_hits h WHERE h.email_id = e.id) AS has_phishing_link
              FROM emails e
              WHERE e.account_id = (SELECT account_id FROM emails WHERE id = ?1)
                AND e.gmail_thread_id = (SELECT gmail_thread_id FROM emails WHERE id = ?1)
@@ -2054,6 +2068,7 @@ pub fn list_thread_messages(state: State<'_, AppState>, email_id: i64) -> Result
                 thread_count: row.get::<_, i64>(11)? as u32,
                 thread_unread: row.get::<_, i64>(12)? as u32,
                 label_ids: parse_label_ids(row.get::<_, Option<String>>(13)?),
+                has_phishing_link: row.get(14)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -2626,6 +2641,92 @@ pub fn list_meetings(
 #[tauri::command]
 pub fn dismiss_meeting(state: State<'_, AppState>, meeting_id: i64) -> Result<(), String> {
     meetings::dismiss_meeting(&state.db, meeting_id)
+}
+
+// --- Known-phishing link feeds -------------------------------------------
+
+/// Re-downloads all three phishing feeds and returns their status.
+///
+/// One feed failing is recorded and skipped rather than aborting the run: a single unreachable
+/// source must not cost the user the other two blocklists.
+#[tauri::command]
+pub async fn refresh_threat_feeds(state: State<'_, AppState>) -> Result<Vec<threat::ThreatFeedStatusDto>, String> {
+    eprintln!("[threat] feed refresh start");
+    for source in threat::feeds::Source::ALL {
+        let name = source.as_str();
+        // The stored ETag turns most refreshes into a cheap 304, which is what keeps
+        // PhishTank's unkeyed download budget from running out.
+        let etag: Option<String> = {
+            let conn = state.db.lock().map_err(|e| e.to_string())?;
+            conn.query_row(
+                "SELECT etag FROM threat_feed_state WHERE source = ?1",
+                params![name],
+                |r| r.get::<_, Option<String>>(0),
+            )
+            .ok()
+            .flatten()
+        };
+
+        match threat::fetch::fetch(source, etag.as_deref()).await {
+            Ok(threat::fetch::FetchOutcome::NotModified) => {
+                eprintln!("[threat] {name}: not modified");
+            }
+            Ok(threat::fetch::FetchOutcome::Fetched { body, etag }) => {
+                let urls = threat::feeds::parse(source, &body);
+                match threat::store_feed(&state.db, source, &urls, etag.as_deref()) {
+                    Ok(stored) => eprintln!("[threat] {name}: stored {stored} url(s) from {} parsed", urls.len()),
+                    Err(e) => {
+                        eprintln!("[threat] {name}: store failed: {e}");
+                        let _ = threat::record_feed_error(&state.db, source, &e);
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("[threat] {name}: fetch failed: {e}");
+                let _ = threat::record_feed_error(&state.db, source, &e);
+            }
+        }
+    }
+    let status = threat::feed_status(&state.db)?;
+    eprintln!("[threat] feed refresh done");
+    Ok(status)
+}
+
+/// The known-phishing links recorded for one message.
+#[tauri::command]
+pub fn link_hits(state: State<'_, AppState>, email_id: i64) -> Result<Vec<threat::LinkHitDto>, String> {
+    threat::link_hits(&state.db, email_id)
+}
+
+/// Re-checks every stored message against the current blocklists, returning how many have at
+/// least one hit. Pure string matching - no model involved - so this is safe to run after a
+/// feed refresh.
+#[tauri::command]
+pub fn rescan_links(state: State<'_, AppState>, account_id: Option<i64>) -> Result<u32, String> {
+    let ids: Vec<i64> = {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare("SELECT id FROM emails WHERE (?1 IS NULL OR account_id = ?1) ORDER BY id")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![account_id], |r| r.get::<_, i64>(0))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        rows
+    };
+    eprintln!("[threat] rescan start: {} email(s)", ids.len());
+
+    let mut flagged = 0u32;
+    for id in ids {
+        match threat::scan_email(&state.db, id) {
+            Ok(hits) if !hits.is_empty() => flagged += 1,
+            Ok(_) => {}
+            Err(e) => eprintln!("[threat] rescan of email {id} failed: {e}"),
+        }
+    }
+    eprintln!("[threat] rescan done: {flagged} email(s) with hits");
+    Ok(flagged)
 }
 
 #[cfg(test)]

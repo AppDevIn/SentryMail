@@ -94,6 +94,9 @@ pub fn run() {
             commands::scan_meetings,
             commands::list_meetings,
             commands::dismiss_meeting,
+            commands::refresh_threat_feeds,
+            commands::link_hits,
+            commands::rescan_links,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
