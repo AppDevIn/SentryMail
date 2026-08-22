@@ -8,32 +8,44 @@
 //! inference, while a false negative silently loses a real meeting. So it errs heavily towards
 //! letting threads through, and only skips text with no scheduling signal whatsoever.
 
-/// Words that suggest a meeting is being arranged.
+/// Single words suggesting a meeting is being arranged. Matched on **word boundaries**, not as
+/// substrings: a plain `contains` here made "am" match "team"/"name"/"exam" and "book" match
+/// "facebook", which let 69% of a real 626-thread inbox through instead of 34%.
 const MEETING_WORDS: &[&str] = &[
-    "meet", "meeting", "call", "zoom", "teams", "webex", "whereby", "hangout", "huddle",
-    "sync", "standup", "stand-up", "catch up", "catch-up", "coffee", "lunch", "dinner",
-    "appointment", "schedule", "scheduling", "reschedule", "calendar", "invite", "availability",
-    "available", "free at", "free on", "book", "booking", "slot", "session", "consult",
-    "interview", "demo", "chat", "discuss", "presentation", "briefing", "1:1", "one-on-one",
+    "meet", "meeting", "meetings", "call", "calls", "zoom", "teams", "webex", "whereby",
+    "huddle", "sync", "standup", "appointment", "schedule", "scheduled", "reschedule",
+    "calendar", "availability", "slot", "consult", "interview",
+    // Social meetings get arranged as often as formal ones. Safe as whole words - unlike
+    // "book"/"am", none of these are substrings of common unrelated words.
+    "lunch", "dinner", "coffee", "breakfast", "drinks", "brunch",
 ];
 
-/// Words that suggest a specific time is being named.
-const TIME_WORDS: &[&str] = &[
+/// Multi-word phrases. These are distinctive enough to match as plain substrings.
+const MEETING_PHRASES: &[&str] = &[
+    "catch up", "catch-up", "stand-up", "one-on-one", "1:1", "are you free", "free at",
+    "free on", "coffee chat", "set up a time", "book a time", "find a time",
+];
+
+/// Day-relative words, again word-boundary matched.
+const DAY_WORDS: &[&str] = &[
     "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
-    "today", "tomorrow", "tonight", "next week", "this week", "morning", "afternoon",
-    "evening", "am", "pm", "a.m.", "p.m.", "o'clock", "noon", "midday",
+    "today", "tomorrow", "tonight",
+];
+
+const DAY_PHRASES: &[&str] = &["next week", "this week"];
+
+const MONTHS: &[&str] = &[
     "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec",
 ];
 
 /// True when the thread is worth spending an inference on.
 ///
-/// Requires *either* an explicit meeting link (decisive on its own) *or* a meeting word paired
-/// with something time-shaped. The pairing is what keeps the gate from passing every message
-/// that happens to contain the word "call" or a weekday in a signature.
+/// Requires either an explicit meeting link (decisive on its own), or a meeting word paired
+/// with something time-shaped. The pairing keeps ordinary mail that merely says "call" or
+/// names a weekday in a signature from costing an inference.
 pub fn worth_scanning(thread_text: &str) -> bool {
     let text = thread_text.to_ascii_lowercase();
 
-    // A meeting link settles it - no need for any other signal.
     if text.contains("meet.google.com")
         || text.contains("zoom.us/j/")
         || text.contains("teams.microsoft.com")
@@ -43,38 +55,96 @@ pub fn worth_scanning(thread_text: &str) -> bool {
         return true;
     }
 
-    let has_meeting_word = MEETING_WORDS.iter().any(|w| text.contains(w));
-    if !has_meeting_word {
+    let has_meeting = MEETING_WORDS.iter().any(|w| contains_word(&text, w))
+        || MEETING_PHRASES.iter().any(|p| text.contains(p));
+    if !has_meeting {
         return false;
     }
 
-    // A digit-and-colon or digit-and-meridiem pattern covers "15:30" / "3pm" without needing a
-    // real parser here.
-    let has_clock_time = contains_clock_time(&text);
-    let has_time_word = TIME_WORDS.iter().any(|w| text.contains(w));
-
-    has_clock_time || has_time_word
+    contains_clock_time(&text)
+        || DAY_WORDS.iter().any(|w| contains_word(&text, w))
+        || DAY_PHRASES.iter().any(|p| text.contains(p))
+        || contains_numeric_date(&text)
 }
 
-/// Spots "15:30", "3pm", "3 pm", "9.30am" without pulling in a date parser.
+/// Substring match that additionally requires non-alphanumeric neighbours, so "call" does not
+/// match "called" and "meet" does not match "meeting" (both spellings are listed explicitly).
+fn contains_word(haystack: &str, needle: &str) -> bool {
+    let mut from = 0usize;
+    while let Some(rel) = haystack[from..].find(needle) {
+        let start = from + rel;
+        let end = start + needle.len();
+        let before_ok = start == 0
+            || !haystack[..start].chars().next_back().is_some_and(|c| c.is_alphanumeric());
+        let after_ok = end == haystack.len()
+            || !haystack[end..].chars().next().is_some_and(|c| c.is_alphanumeric());
+        if before_ok && after_ok {
+            return true;
+        }
+        from = end;
+        if from >= haystack.len() {
+            break;
+        }
+    }
+    false
+}
+
+/// Spots "15:30", "3pm", "3 p.m." - a real clock time, not any digit.
 fn contains_clock_time(text: &str) -> bool {
-    let bytes = text.as_bytes();
-    for (i, &c) in bytes.iter().enumerate() {
-        if !c.is_ascii_digit() {
+    let b = text.as_bytes();
+    for i in 0..b.len() {
+        if !b[i].is_ascii_digit() {
             continue;
         }
-        let rest = &text[i..];
-        // "3:30" / "15:30"
-        if rest.len() > 2 {
-            let after = &bytes[i + 1..];
-            if after.first() == Some(&b':') || (after.first().is_some_and(u8::is_ascii_digit) && after.get(1) == Some(&b':')) {
+        // Only consider the start of a number.
+        if i > 0 && b[i - 1].is_ascii_digit() {
+            continue;
+        }
+        let mut j = i;
+        while j < b.len() && b[j].is_ascii_digit() {
+            j += 1;
+        }
+        if j - i > 2 {
+            continue; // more than two digits is not an hour
+        }
+        let rest = &text[j..];
+        // "3:30"
+        if rest.starts_with(':') && rest.len() > 2 && rest[1..3].bytes().all(|c| c.is_ascii_digit()) {
+            return true;
+        }
+        // "3pm" / "3 pm" / "3 p.m."
+        let t = rest.trim_start();
+        if t.starts_with("am") || t.starts_with("pm") || t.starts_with("a.m.") || t.starts_with("p.m.") {
+            return true;
+        }
+    }
+    false
+}
+
+/// Spots "12 Aug" / "Aug 12" - a month name sitting next to a number. A bare month name is far
+/// too common in ordinary prose ("may", "mar") to count on its own.
+fn contains_numeric_date(text: &str) -> bool {
+    for m in MONTHS {
+        let mut from = 0usize;
+        while let Some(rel) = text[from..].find(m) {
+            let start = from + rel;
+            let before = text[..start].trim_end();
+            if before.chars().next_back().is_some_and(|c| c.is_ascii_digit()) {
                 return true;
             }
-        }
-        // "3pm" / "3 pm"
-        let tail = rest[1..].trim_start();
-        if tail.starts_with("pm") || tail.starts_with("am") {
-            return true;
+            // Skip the rest of the month word, then look for a following number.
+            let mut end = start + m.len();
+            while end < text.len() && text[end..].chars().next().is_some_and(|c| c.is_alphabetic()) {
+                end += 1;
+            }
+            let after = text[end..].trim_start();
+            if after.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+                return true;
+            }
+            from = start + m.len();
+            if from >= text.len() {
+                break;
+            }
         }
     }
     false
@@ -110,6 +180,20 @@ mod tests {
     fn skips_a_bare_weekday_with_no_meeting_word() {
         // A date in a signature or newsletter must not cost an inference.
         assert!(!worth_scanning("Sent on Tuesday. Unsubscribe at the link below."));
+    }
+
+    #[test]
+    fn substrings_do_not_count_as_words() {
+        // The real bug: these all passed the old `contains` filter.
+        assert!(!worth_scanning("The team name is Example. Sent Tuesday."));
+        assert!(!worth_scanning("Follow us on facebook, updates every Monday."));
+        assert!(!worth_scanning("Your exam results are available Monday."));
+    }
+
+    #[test]
+    fn bare_month_word_does_not_count_as_a_date() {
+        assert!(!worth_scanning("You may schedule this at your convenience."));
+        assert!(worth_scanning("Let's schedule the interview for 12 Aug"));
     }
 
     #[test]
