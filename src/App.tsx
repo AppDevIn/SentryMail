@@ -215,9 +215,19 @@ function App() {
   }, []);
 
   useEffect(() => {
+    // The calendar is a meetings view and renders no mail, so reloading the message list for it
+    // is pure waste - and not cheap waste: refreshEmails re-fetches a page of mail and then
+    // issues one getTriageResult IPC call *per email* (see loadTriage), each taking the DB
+    // mutex. That is ~100 round trips to populate a list the calendar never shows, which is
+    // what made opening the tab lag far more than the rest of the app.
+    if (folder === "calendar" && !selectedLabelId) {
+      // Counts still refresh so the sidebar badges stay live while the calendar is open.
+      refreshCounts(selectedAccountId).catch(() => {});
+      return;
+    }
     loadedRef.current = 0;
     refreshEmails(selectedAccountId).catch((e) => setError(String(e)));
-  }, [selectedAccountId, selectedLabelId, folder, refreshEmails]);
+  }, [selectedAccountId, selectedLabelId, folder, refreshEmails, refreshCounts]);
 
   useEffect(() => {
     refreshLabels(selectedAccountId).catch(() => {});
