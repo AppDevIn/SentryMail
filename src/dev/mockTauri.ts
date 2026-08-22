@@ -34,6 +34,7 @@ const emails: EmailDto[] = [
       "We blocked an unusual sign-in attempt on your Microsoft account.\n\nTo keep your account open you must verify your identity within 24 hours: https://ms-verify-login.co/secure/verify?u=jordan\n\nIf you do not verify, your account and all files will be permanently deleted.\n\nMicrosoft Account Team",
     received_at: iso(40),
     is_read: false,
+    has_phishing_link: true,
   },
   {
     id: 2,
@@ -51,6 +52,7 @@ const emails: EmailDto[] = [
       "Hi Jordan,\n\nQuick note before you process invoice 4471: our bank details changed this month, so please use the new account on the attached remittance sheet rather than the one on file.\n\nAppreciate you turning this around before Friday.\n\nBest,\nDana",
     received_at: iso(65),
     is_read: false,
+    has_phishing_link: false,
   },
   {
     id: 3,
@@ -69,6 +71,7 @@ const emails: EmailDto[] = [
       "Hey Jordan,\n\nCan you grab a slot for the Q3 review? Thu 14:00 or Fri 10:00 both work for me. Please also send the updated threat model before Friday so I can pre-read.\n\nThanks!\nPriya",
     received_at: iso(60 * 26),
     is_read: true,
+    has_phishing_link: false,
   },
   {
     id: 4,
@@ -87,6 +90,7 @@ const emails: EmailDto[] = [
       "Hi all,\n\nCountersigned copy attached. Let me know if anything else is outstanding on our side; otherwise we're good to go.\n\nMarcus\n\nOn Tue, Aug 18, 2026 at 4:02 PM 'Legal Team' via Legal <legal@northgate.io> wrote:\n\n> Hi Marcus,\n>\n> Please find the final version attached for countersignature. The signed copy goes in\n> our shared folder\n> <\n> https://urldefense.com/v3/__https://www.northgate.io/legal/contracts__;!!AYXF0UNIvtQ$> for reference.\n>\n>\n>\n> Thanks,\n> Legal team\n>\n> On Mon, Aug 17, 2026 at 9:15 AM Marcus Ade <marcus@adelegal.co> wrote:\n>\n>> Sending over our redlines now.\n>> Marcus",
     received_at: iso(60 * 30),
     is_read: true,
+    has_phishing_link: false,
   },
   {
     id: 6,
@@ -105,6 +109,7 @@ const emails: EmailDto[] = [
       "Hi Marcus,\n\nPlease find the final version attached for countersignature. The signed copy goes in our shared folder\n<https://www.northgate.io/legal/contracts> for reference.\n\nThanks,\nLegal team\n\nOn Mon, Aug 17, 2026 at 9:15 AM Marcus Ade <marcus@adelegal.co> wrote:\n\n> Sending over our redlines now.\n> Marcus",
     received_at: iso(60 * 24 * 2 + 60 * 5),
     is_read: true,
+    has_phishing_link: false,
   },
   {
     id: 7,
@@ -121,6 +126,7 @@ const emails: EmailDto[] = [
     body_text: "Sending over our redlines now.\n\nMarcus",
     received_at: iso(60 * 24 * 3 + 60 * 2),
     is_read: true,
+    has_phishing_link: false,
   },
   {
     id: 8,
@@ -139,6 +145,7 @@ const emails: EmailDto[] = [
       "Forwarding for visibility first, will compile them and update in the chat once I got home\n\n________________________________\nFrom: Jerina via SoC RT <booking@comp.example.edu>\nSent: Friday, August 21, 2026 12:41 PM\nTo: Wai Hou Man <houman@example.edu>\nSubject: [SOC #248627] Booking (Venue/Room): Friday Hacks Venue Booking\n\nDear Hou Man\n\nSR11 is not available, and SR13 is not available on one of the requested dates.\n\nPlease check the booking details to ensure that everything is in order.\n\nConfirmed Booking reference \"RT248627_4\"\n\nWeek Date Start Time Finish Time\n4 Wednesday, August 26, 2026 2:30 pm 6:30 pm\n4 Friday, August 28, 2026 6:00 pm 9:30 pm\n\nBest Regards,\nJerina\n\nFrom: Wai Hou Man <houman@example.edu>\nSent: Tuesday, 18 August 2026 3:26 pm\nTo: booking@comp.example.edu\nSubject: Re: [SOC #248627] Booking (Venue/Room): Friday Hacks Venue Booking\n\nHey Jerina,\n\nThanks for assisting us with all the bookings so far. Ideally we would still like to confirm the bookings up until midterms.\n\nBest Regards,\nHou Man",
     received_at: iso(30),
     is_read: false,
+    has_phishing_link: false,
   },
   {
     id: 5,
@@ -156,6 +163,7 @@ const emails: EmailDto[] = [
       "This week: local-model benchmark results, an EU data-residency ruling, and three tools worth a look.\n\n(You're receiving this because you subscribed at ciphergram.news.)",
     received_at: iso(60 * 24 * 4),
     is_read: true,
+    has_phishing_link: false,
   },
   {
     // Remote images in four different places. The only <img> is a tracking pixel; the visible
@@ -182,6 +190,7 @@ const emails: EmailDto[] = [
     body_text: "Our autumn collection is live.\n\nSee you soon,\nThe studio",
     received_at: iso(60 * 6),
     is_read: false,
+    has_phishing_link: false,
   },
   {
     // Two inline images that must both surface as chips: one referenced but too large to
@@ -200,6 +209,7 @@ const emails: EmailDto[] = [
     body_text: "Photos from the site visit:\n\n[image: family-photo.jpg]\n\nDana",
     received_at: iso(60 * 9),
     is_read: true,
+    has_phishing_link: false,
   },
 ];
 
@@ -218,6 +228,7 @@ emails.push({
   body_text: "Automated receipt. Room 3B is booked for 13 Nov, 14:00-16:00. No reply needed.",
   received_at: iso(60 * 24 * 6),
   is_read: true,
+  has_phishing_link: false,
 });
 
 const labels: LabelDto[] = [
@@ -546,6 +557,23 @@ window.__TAURI_INTERNALS__ = {
             ],
           };
         return { images: [], skipped: [] };
+      case "link_hits":
+        return args.emailId === 1
+          ? [
+              { url: "https://ms-verify-login.co/secure/verify?u=jordan", match_kind: "exact", source: "phishtank" },
+              { url: "https://ms-verify-login.co/", match_kind: "host", source: "openphish" },
+            ]
+          : [];
+      case "refresh_threat_feeds":
+        await delay(600);
+        return [
+          { source: "phishtank", last_fetched: iso(2), entry_count: 62_314, last_error: null },
+          { source: "openphish", last_fetched: iso(2), entry_count: 11_902, last_error: null },
+          { source: "urlhaus", last_fetched: null, entry_count: 0, last_error: "network unreachable" },
+        ];
+      case "rescan_links":
+        await delay(400);
+        return 1;
       case "unsubscribe_info":
         return args.emailId === 5
           ? { method: { kind: "browser", url: "https://ciphergram.news/unsubscribe" }, unsubscribed_at: null }

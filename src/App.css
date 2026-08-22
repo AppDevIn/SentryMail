@@ -3532,3 +3532,135 @@ select:focus-visible {
   position: relative;
   z-index: 3;
 }
+
+/* ------------------------------------------- known phishing links (feeds) */
+/* Confirmed blocklist hits, so they share the danger ramp rather than the
+   caution one the model's own guesses use. Both themes come from the tokens. */
+
+.row-phish {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: var(--danger-bg);
+  border: 1px solid var(--danger-border);
+  color: var(--danger-fg);
+}
+
+.phish-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 18px;
+  border-radius: var(--r-card);
+  border: 1px solid var(--danger-border);
+  background: var(--danger-bg);
+}
+
+.phish-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--danger-fg);
+}
+
+.phish-icon {
+  flex: 0 0 auto;
+}
+
+.phish-title {
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.phish-badge {
+  margin-left: auto;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  padding: 1px 6px;
+  border-radius: 3px;
+  border: 1px solid var(--danger-border);
+}
+
+.phish-copy {
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--text);
+}
+
+.phish-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.phish-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  padding: 6px 10px;
+  border-radius: var(--r-card);
+  border: 1px solid var(--danger-border);
+  background: var(--surface);
+}
+
+/* Deliberately not a link: a listed phishing URL is shown as inert text. */
+.phish-url {
+  font-size: 12.5px;
+  color: var(--danger-fg);
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.phish-source {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+/* settings: per-feed freshness under the "Update feeds" button */
+.feed-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+}
+
+.feed-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+
+.feed-name {
+  min-width: 90px;
+  font-weight: 500;
+  color: var(--text-heading);
+}
+
+.feed-count {
+  font-size: 11.5px;
+  color: var(--text-2);
+}
+
+.feed-time {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.feed-error {
+  flex: 1 1 100%;
+  font-size: 12px;
+  color: var(--danger-fg);
+}

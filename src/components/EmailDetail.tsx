@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { AttachmentDto, EmailDto, LabelDto, LabelSuggestion, Risk, TriageResult } from "../types";
+import type { AttachmentDto, EmailDto, LabelDto, LabelSuggestion, LinkHitDto, Risk, TriageResult } from "../types";
 import { api } from "../api";
 import { MetaTag, typeLabel } from "./Badge";
 import { ChevronDownIcon, PlusIcon, ShieldAlertIcon, SparklesIcon } from "./icons";
@@ -428,6 +428,27 @@ export function EmailDetail({
     };
   }, [email.id]);
 
+  // Confirmed blocklist hits for this message. Only fetched when the backend already flagged it.
+  const [linkHits, setLinkHits] = useState<LinkHitDto[]>([]);
+  useEffect(() => {
+    if (!email.has_phishing_link) {
+      setLinkHits([]);
+      return;
+    }
+    let cancelled = false;
+    api
+      .linkHits(email.id)
+      .then((hits) => {
+        if (!cancelled) setLinkHits(hits);
+      })
+      .catch(() => {
+        if (!cancelled) setLinkHits([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [email.id, email.has_phishing_link]);
+
   const threadItems = useMemo<ThreadItem[]>(() => {
     const { quoted } = splitQuotedHistory(email.body_text || "");
     const quotedMsgs = quoted ? parseThread(quoted).reverse() : [];
@@ -785,6 +806,35 @@ export function EmailDetail({
               {triage!.next_step_warning ?? "Don't click links or reply. Contact the sender through a channel you already trust."}
             </p>
             <div className="action-foot">Reply is disabled for this email.</div>
+          </section>
+        )}
+
+        {email.has_phishing_link && (
+          <section className="phish-panel" role="alert">
+            <div className="phish-head">
+              <ShieldAlertIcon className="phish-icon" />
+              <span className="phish-title">Known phishing link</span>
+              <span className="mono phish-badge">CONFIRMED LISTING</span>
+            </div>
+            <p className="phish-copy">
+              {linkHits.length === 1 ? "A link" : "Links"} in this email {linkHits.length === 1 ? "appears" : "appear"} on a
+              published phishing blocklist downloaded to this Mac. This is a confirmed match against a reported URL, not a
+              guess by the on-device model. Do not open {linkHits.length === 1 ? "it" : "them"} or enter anything on the page.
+            </p>
+            {linkHits.length > 0 && (
+              <ul className="phish-list">
+                {linkHits.map((hit, i) => (
+                  <li key={`${hit.url}-${hit.source}-${i}`} className="phish-item">
+                    {/* Plain text on purpose: a listed phishing URL must never be clickable. */}
+                    <span className="mono phish-url">{hit.url}</span>
+                    <span className="phish-source">
+                      reported by {hit.source}
+                      {hit.match_kind === "host" ? " · host listed" : ""}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
           </section>
         )}
 

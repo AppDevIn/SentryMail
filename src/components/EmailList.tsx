@@ -396,10 +396,15 @@ export function EmailList({
                         ? triage.summary
                         : previewLine(splitQuotedHistory(email.body_text || "").newest, 160) || "(no text)"}
                     </span>
-                    {flagged && (
+                    {(flagged || email.has_phishing_link) && (
                       <span className="row-flags">
-                        <RiskPill risk={risk!} />
-                        <span className="mono row-note">{RISK_NOTES[risk!]}</span>
+                        {email.has_phishing_link && (
+                          <span className="mono row-phish" title="A link in this email is on a published phishing blocklist">
+                            KNOWN PHISHING LINK
+                          </span>
+                        )}
+                        {flagged && <RiskPill risk={risk!} />}
+                        {flagged && <span className="mono row-note">{RISK_NOTES[risk!]}</span>}
                       </span>
                     )}
                   </button>

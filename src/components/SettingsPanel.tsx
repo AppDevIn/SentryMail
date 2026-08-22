@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import type { ModelStatus } from "../types";
+import type { ModelStatus, ThreatFeedStatusDto } from "../types";
+import { api } from "../api";
 import { currentTheme, setTheme as persistTheme } from "../theme";
 import {
   RATE_VALUES,
@@ -129,6 +130,65 @@ function VoiceSection() {
   );
 }
 
+function formatFetched(iso: string | null): string {
+  if (!iso) return "never updated";
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? "never updated" : `updated ${d.toLocaleString()}`;
+}
+
+/** Phishing URL blocklists: download state per feed, and a button to refresh them. */
+function ThreatFeedSection() {
+  const [feeds, setFeeds] = useState<ThreatFeedStatusDto[] | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = async () => {
+    setRefreshing(true);
+    setError(null);
+    try {
+      setFeeds(await api.refreshThreatFeeds());
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  return (
+    <section className="settings-section">
+      <div className="settings-row">
+        <div>
+          <div className="settings-name">Phishing link feeds</div>
+          <div className="settings-detail">
+            Lists of URLs already reported as phishing (PhishTank, OpenPhish, URLhaus). They are downloaded to this Mac and
+            matched locally, so no link of yours is ever sent anywhere.
+          </div>
+          <div className="settings-hint">Emails containing a listed URL are marked with a phishing badge.</div>
+        </div>
+        <div className="settings-actions">
+          <button type="button" className="btn btn-accent" disabled={refreshing} onClick={() => void refresh()}>
+            {refreshing ? "Updating…" : "Update feeds"}
+          </button>
+        </div>
+      </div>
+      {error && <div className="inline-error">{error}</div>}
+      {feeds && (
+        <ul className="feed-list">
+          {feeds.map((f) => (
+            <li key={f.source} className="feed-row">
+              <span className="feed-name">{f.source}</span>
+              <span className="mono feed-count">{f.entry_count.toLocaleString()} entries</span>
+              <span className="feed-time">{formatFetched(f.last_fetched)}</span>
+              {f.last_error && <span className="feed-error">{f.last_error}</span>}
+            </li>
+          ))}
+          {feeds.length === 0 && <li className="settings-hint">No feeds configured.</li>}
+        </ul>
+      )}
+    </section>
+  );
+}
+
 /** Where the machinery lives: model on/off, search index, sync. Out of the main UI by design. */
 export function SettingsPanel({
   open,
@@ -248,6 +308,8 @@ export function SettingsPanel({
             </div>
           </div>
         </section>
+
+        <ThreatFeedSection />
 
         <section className="settings-section">
           <div className="settings-row">

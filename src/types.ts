@@ -24,6 +24,25 @@ export interface EmailDto {
   label_ids: string[];
   received_at: string;
   is_read: boolean;
+  /** A URL in this message appears on a downloaded phishing feed (ADR: link hits). */
+  has_phishing_link: boolean;
+}
+
+/** One URL in a message that matched a downloaded phishing feed. */
+export interface LinkHitDto {
+  url: string;
+  /** "exact" = the whole URL is listed; "host" = the host it points at is listed. */
+  match_kind: "exact" | "host";
+  /** Feed that reported it, e.g. "phishtank", "openphish", "urlhaus". */
+  source: string;
+}
+
+/** Freshness of one locally stored phishing feed. */
+export interface ThreatFeedStatusDto {
+  source: string;
+  last_fetched: string | null;
+  entry_count: number;
+  last_error: string | null;
 }
 
 export interface SyncSummary {

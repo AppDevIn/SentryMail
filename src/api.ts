@@ -14,7 +14,9 @@ import type {
   EmailCounts,
   EmailDto,
   InlineImagesDto,
+  LinkHitDto,
   RemoteImageDto,
+  ThreatFeedStatusDto,
   SetReadResult,
   ModelStatus,
   SearchResultDto,
@@ -124,6 +126,13 @@ export const api = {
    */
   fetchRemoteImages: (emailId: number, urls: string[]) =>
     invoke<RemoteImageDto[]>("fetch_remote_images", { emailId, urls }),
+
+  /** Downloads the phishing URL feeds and stores them locally; returns each feed's state. */
+  refreshThreatFeeds: () => invoke<ThreatFeedStatusDto[]>("refresh_threat_feeds"),
+  /** URLs in this email that appear on a downloaded phishing feed. */
+  linkHits: (emailId: number) => invoke<LinkHitDto[]>("link_hits", { emailId }),
+  /** Re-checks stored mail against the current feeds; returns the number of emails with hits. */
+  rescanLinks: (accountId?: number) => invoke<number>("rescan_links", { accountId: accountId ?? null }),
 
   unsubscribeInfo: (emailId: number) =>
     invoke<UnsubscribeInfo>("unsubscribe_info", { emailId }),
