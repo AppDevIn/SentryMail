@@ -6,6 +6,7 @@ mod images;
 mod llm;
 mod meetings;
 mod search;
+mod threat;
 mod triage;
 mod unsubscribe;
 

@@ -123,6 +123,53 @@ CREATE TABLE IF NOT EXISTS meetings (
 CREATE INDEX IF NOT EXISTS idx_meetings_starts ON meetings(starts_at);
 CREATE INDEX IF NOT EXISTS idx_meetings_account ON meetings(account_id);
 
+-- Known-phishing URL feeds (PhishTank / OpenPhish / URLhaus), downloaded whole and matched
+-- locally. Whole-list download is what keeps the privacy promise: a per-URL lookup service
+-- would learn who the user talks to and what they were sent.
+CREATE TABLE IF NOT EXISTS threat_urls (
+    canonical_url TEXT PRIMARY KEY,
+    host          TEXT NOT NULL,
+    source        TEXT NOT NULL,
+    first_seen    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_threat_urls_host ON threat_urls(host);
+
+-- Hosts judged to belong to the attacker rather than to a compromised legitimate site.
+-- Populated only via the promotion rule in `threat::matching` - never straight from a feed.
+CREATE TABLE IF NOT EXISTS threat_hosts (
+    host      TEXT PRIMARY KEY,
+    url_count INTEGER NOT NULL,
+    source    TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS threat_feed_state (
+    source       TEXT PRIMARY KEY,
+    last_fetched TEXT,
+    etag         TEXT,
+    entry_count  INTEGER NOT NULL DEFAULT 0,
+    last_error   TEXT
+);
+
+CREATE TABLE IF NOT EXISTS email_link_hits (
+    email_id   INTEGER NOT NULL REFERENCES emails(id) ON DELETE CASCADE,
+    url        TEXT NOT NULL,
+    match_kind TEXT NOT NULL,
+    source     TEXT NOT NULL,
+    PRIMARY KEY (email_id, url)
+);
+CREATE INDEX IF NOT EXISTS idx_email_link_hits_email ON email_link_hits(email_id);
+
+-- A sender caught mailing a confirmed phishing URL. This is what turns a URL feed into the
+-- "warn me when a known bad sender contacts me" behaviour the feeds cannot provide directly.
+CREATE TABLE IF NOT EXISTS sender_reputation (
+    account_id     INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    sender_address TEXT NOT NULL,
+    phish_hits     INTEGER NOT NULL DEFAULT 0,
+    first_hit_at   TEXT,
+    last_hit_at    TEXT,
+    PRIMARY KEY (account_id, sender_address)
+);
+
 CREATE TABLE IF NOT EXISTS email_embeddings (
     email_id      INTEGER PRIMARY KEY REFERENCES emails(id) ON DELETE CASCADE,
     embedding     BLOB NOT NULL,
