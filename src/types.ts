@@ -117,9 +117,13 @@ export interface EmbedProgressEvent {
   error: string | null;
 }
 
-/** Sidebar folders (ADR 0010/0013). `all` is the API value used for label views. */
-export type Folder = "inbox" | "quarantine" | "flagged" | "archive";
-export type ApiFolder = Folder | "all";
+/**
+ * Sidebar folders (ADR 0010/0013). `calendar` is a view over extracted meetings rather than a
+ * mail folder, so it is deliberately excluded from `ApiFolder` - the backend never sees it.
+ * `all` is the API value used for label views.
+ */
+export type Folder = "inbox" | "quarantine" | "flagged" | "archive" | "calendar";
+export type ApiFolder = Exclude<Folder, "calendar"> | "all";
 
 export interface FolderCounts {
   inbox_total: number;
@@ -192,4 +196,30 @@ export interface SyncProgressEvent {
   phase: string;
   done: number;
   total: number | null;
+}
+
+/** "confirmed" = has a validated joinable link; "possible" = both sides agreed a time, no link. */
+export type MeetingKind = "confirmed" | "possible";
+
+export interface MeetingDto {
+  id: number;
+  account_id: number;
+  gmail_thread_id: string;
+  /** Newest message in the thread - the click-through target. */
+  source_email_id: number | null;
+  kind: MeetingKind;
+  title: string;
+  /** Local ISO 8601, "YYYY-MM-DDTHH:MM", as stated in the email text. */
+  starts_at: string;
+  duration_minutes: number | null;
+  join_url: string | null;
+  provider: string | null;
+  confidence: "high" | "medium" | "low";
+}
+
+export interface MeetingScanProgressEvent {
+  gmail_thread_id: string;
+  done: number;
+  total: number;
+  error: string | null;
 }

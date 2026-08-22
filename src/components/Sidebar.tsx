@@ -15,6 +15,8 @@ interface SidebarProps {
   folder: Folder | null;
   onSelectFolder: (folder: Folder) => void;
   counts: FolderCounts;
+  /** Upcoming meetings found in mail; badges the Calendar view. */
+  upcomingMeetings: number;
   labels: LabelDto[];
   selectedLabelId: string | null;
   onSelectLabel: (gmailLabelId: string | null) => void;
@@ -68,6 +70,7 @@ export function Sidebar({
   folder,
   onSelectFolder,
   counts,
+  upcomingMeetings,
   labels,
   selectedLabelId,
   onSelectLabel,
@@ -183,6 +186,7 @@ export function Sidebar({
     { key: "quarantine", name: "Quarantine", count: counts.quarantine, tone: counts.quarantine > 0 ? "danger" : undefined },
     { key: "flagged", name: "Flagged", count: counts.flagged, tone: counts.flagged > 0 ? "caution" : undefined },
     { key: "archive", name: "Archive", count: counts.archive },
+    { key: "calendar", name: "Calendar", count: upcomingMeetings, title: "Upcoming meetings found in your mail" },
   ];
 
   return (

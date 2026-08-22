@@ -9,6 +9,7 @@ import type {
   AttachmentDto,
   LabelDto,
   LabelSuggestion,
+  MeetingDto,
   EmailCounts,
   EmailDto,
   InlineImageDto,
@@ -109,6 +110,15 @@ export const api = {
   loadEmbeddingModel: () => invoke<void>("load_embedding_model"),
   embedPending: (accountId?: number) =>
     invoke<number>("embed_pending", { accountId: accountId ?? null }),
+  /** Re-scans threads whose meeting data is stale. One inference per changed thread. */
+  scanMeetings: (accountId?: number) =>
+    invoke<number>("scan_meetings", { accountId: accountId ?? null }),
+  /** Meetings starting in [from, to) - the visible month. Excludes dismissed ones. */
+  listMeetings: (from: string, to: string, accountId?: number) =>
+    invoke<MeetingDto[]>("list_meetings", { accountId: accountId ?? null, from, to }),
+  /** Hides a meeting permanently; a later rescan will not bring it back. */
+  dismissMeeting: (meetingId: number) => invoke<void>("dismiss_meeting", { meetingId }),
+
   /**
    * Hybrid (keyword + semantic when available) search over the current view's scope:
    * the selected account (or all), the open label, and only DANGER mail in Quarantine.

@@ -15,12 +15,15 @@ import type {
   SyncProgressEvent,
   TriageProgressEvent,
   TriageResult,
+  MeetingDto,
+  MeetingScanProgressEvent,
 } from "./types";
 import { Sidebar } from "./components/Sidebar";
 import { EmailList } from "./components/EmailList";
 import { EmailDetail } from "./components/EmailDetail";
 import { Compose } from "./components/Compose";
 import { SettingsPanel } from "./components/SettingsPanel";
+import { CalendarMonth } from "./components/CalendarMonth";
 import "./App.css";
 
 const PAGE_SIZE = 100;
@@ -89,6 +92,13 @@ function App() {
   const syncingRef = useRef(false);
   const [analyzingIds, setAnalyzingIds] = useState<Set<number>>(new Set());
   const [analysisErrors, setAnalysisErrors] = useState<Record<number, string>>({});
+  const [meetings, setMeetings] = useState<MeetingDto[]>([]);
+  const [calendarMonth, setCalendarMonth] = useState<Date>(() => {
+    const now = new Date();
+    return new Date(now.getFullYear(), now.getMonth(), 1);
+  });
+  const [scanningMeetings, setScanningMeetings] = useState(false);
+  const [meetingScanProgress, setMeetingScanProgress] = useState<{ done: number; total: number } | null>(null);
   // Emails we already auto-analyzed on open this session - don't keep retrying a failure.
   const autoAnalyzed = useRef<Set<number>>(new Set());
   // How many rows are currently loaded, so refreshes keep the same depth.
@@ -323,6 +333,53 @@ function App() {
     [refreshCounts, selectedAccountId],
   );
 
+  // The visible month as a half-open [from, to) range of local wall-clock ISO strings.
+  // Meetings are stored as the email stated them (no timezone), so this compares as text
+  // rather than going through Date, which would shift them by the browser's offset.
+  const monthRange = useCallback((m: Date) => {
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const from = `${m.getFullYear()}-${pad(m.getMonth() + 1)}-01T00:00`;
+    const next = new Date(m.getFullYear(), m.getMonth() + 1, 1);
+    const to = `${next.getFullYear()}-${pad(next.getMonth() + 1)}-01T00:00`;
+    return { from, to };
+  }, []);
+
+  const refreshMeetings = useCallback(
+    async (m: Date, accountId: number | null) => {
+      const { from, to } = monthRange(m);
+      setMeetings(await api.listMeetings(from, to, accountId ?? undefined));
+    },
+    [monthRange],
+  );
+
+  useEffect(() => {
+    void refreshMeetings(calendarMonth, selectedAccountId).catch((e) => setError(String(e)));
+  }, [calendarMonth, selectedAccountId, refreshMeetings]);
+
+  useEffect(() => {
+    const unlisten = listen<MeetingScanProgressEvent>("meeting-scan-progress", (event) => {
+      const { done, total, error: scanError } = event.payload;
+      setMeetingScanProgress({ done, total });
+      if (scanError) setError(scanError);
+      if (done >= total) setMeetingScanProgress(null);
+    });
+    return () => {
+      void unlisten.then((f) => f());
+    };
+  }, []);
+
+  const doScanMeetings = () =>
+    withBusy(async () => {
+      setScanningMeetings(true);
+      try {
+        await api.scanMeetings(selectedAccountId ?? undefined);
+        await refreshMeetings(calendarMonth, selectedAccountId);
+      } finally {
+        setScanningMeetings(false);
+        setMeetingScanProgress(null);
+      }
+    });
+
   const openEmail = (emailId: number) => {
     setPane({ kind: "thread", emailId });
     const e = emails.find((x) => x.id === emailId) ?? extraEmails[emailId];
@@ -371,6 +428,13 @@ function App() {
     setExtraEmails((prev) => (prev[emailId] ? { ...prev, [emailId]: { ...prev[emailId], label_ids: labelIds } } : prev));
   };
   const analyzing = analyzingIds.size > 0 || progress !== null;
+  // Badge counts only meetings still ahead of us; a month full of past ones isn't a to-do.
+  const nowIso = (() => {
+    const d = new Date();
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  })();
+  const upcomingMeetingCount = meetings.filter((m) => m.starts_at >= nowIso).length;
 
   const viewTitle = selectedLabel
     ? selectedLabel.name
@@ -502,6 +566,7 @@ function App() {
           setLabels((prev) => prev.map((l) => (l.id === labelId ? { ...updated, thread_count: l.thread_count } : l)));
         }}
         counts={folderCounts}
+        upcomingMeetings={upcomingMeetingCount}
         modelStatus={modelStatus}
         busy={busy}
         analyzing={analyzing}
@@ -533,124 +598,156 @@ function App() {
         }
       />
 
-      {showList && (
-        <EmailList
-          title={viewTitle}
-          folder={selectedLabelId ? "all" : folder}
-          labelsById={labelsById}
-          emails={emails}
-          total={counts.total}
-          unreadCount={counts.unread}
-          hasMore={emails.length < counts.total}
-          loadingMore={loadingMore}
-          onLoadMore={loadOlder}
-          accountEmails={accountEmails}
-          triageByEmail={triageByEmail}
-          filter={filter}
-          onFilter={setFilter}
-          selectedEmailId={selectedEmailId}
-          onOpen={openEmail}
-          search={{
-            semanticEnabled: embedModelStatus.state === "ready",
-            input: searchInput,
-            query: searchQuery,
-            results: searchResults,
-            loading: searchLoading,
-            onInput: onSearchInput,
-            onSubmit: onSearchSubmit,
-            onClear: clearSearch,
+      {folder === "calendar" && !selectedLabelId ? (
+        <CalendarMonth
+          meetings={meetings}
+          month={calendarMonth}
+          onChangeMonth={setCalendarMonth}
+          onOpenSource={(emailId) => {
+            setFolder("inbox");
+            openEmail(emailId);
           }}
-          busy={busy}
-          hasAccounts={accounts.length > 0}
-          onAddAccount={doAddAccount}
-          onSync={doSync}
+          onJoin={(url) => {
+            void api.openExternal(url).catch((e) => setError(String(e)));
+          }}
+          onDismiss={(meetingId) => {
+            void (async () => {
+              try {
+                await api.dismissMeeting(meetingId);
+                setMeetings((prev) => prev.filter((m) => m.id !== meetingId));
+              } catch (e) {
+                setError(String(e));
+              }
+            })();
+          }}
+          scanning={scanningMeetings}
+          scanProgress={meetingScanProgress}
+          onScan={doScanMeetings}
+          modelReady={modelReady}
+          onOpenSettings={() => setSettingsOpen(true)}
         />
-      )}
+      ) : (
+        <>
+        {showList && (
+          <EmailList
+            title={viewTitle}
+            folder={selectedLabelId ? "all" : folder}
+            labelsById={labelsById}
+            emails={emails}
+            total={counts.total}
+            unreadCount={counts.unread}
+            hasMore={emails.length < counts.total}
+            loadingMore={loadingMore}
+            onLoadMore={loadOlder}
+            accountEmails={accountEmails}
+            triageByEmail={triageByEmail}
+            filter={filter}
+            onFilter={setFilter}
+            selectedEmailId={selectedEmailId}
+            onOpen={openEmail}
+            search={{
+              semanticEnabled: embedModelStatus.state === "ready",
+              input: searchInput,
+              query: searchQuery,
+              results: searchResults,
+              loading: searchLoading,
+              onInput: onSearchInput,
+              onSubmit: onSearchSubmit,
+              onClear: clearSearch,
+            }}
+            busy={busy}
+            hasAccounts={accounts.length > 0}
+            onAddAccount={doAddAccount}
+            onSync={doSync}
+          />
+        )}
 
-      {showPane && (
-        <main className="reading-pane">
-          {error && (
-            <div className="banner banner-error sm-fade" role="alert">
-              <span className="mono banner-label">error</span>
-              <span className="banner-text">{error}</span>
-              <button type="button" className="link-action" onClick={() => setError(null)}>
-                Dismiss
-              </button>
-            </div>
-          )}
-          {notice && (
-            <div className="banner banner-notice sm-fade" role="status">
-              <span className="mono banner-label">notice</span>
-              <span className="banner-text">{notice}</span>
-              <button type="button" className="link-action" onClick={() => setNotice(null)}>
-                Dismiss
-              </button>
-            </div>
-          )}
+        {showPane && (
+          <main className="reading-pane">
+            {error && (
+              <div className="banner banner-error sm-fade" role="alert">
+                <span className="mono banner-label">error</span>
+                <span className="banner-text">{error}</span>
+                <button type="button" className="link-action" onClick={() => setError(null)}>
+                  Dismiss
+                </button>
+              </div>
+            )}
+            {notice && (
+              <div className="banner banner-notice sm-fade" role="status">
+                <span className="mono banner-label">notice</span>
+                <span className="banner-text">{notice}</span>
+                <button type="button" className="link-action" onClick={() => setNotice(null)}>
+                  Dismiss
+                </button>
+              </div>
+            )}
 
-          {pane.kind === "compose" ? (
-            <Compose
-              accounts={accounts}
-              defaultAccountId={selectedAccountId ?? (accounts.length === 1 ? accounts[0].id : null)}
-              narrow={narrow}
-              onClose={closePane}
-              onSend={async (accountId, to, cc, subject, body) => {
-                await api.sendMessage(accountId, to, cc, subject, body);
-              }}
-            />
-          ) : selectedEmail ? (
-            <EmailDetail
-              key={selectedEmail.id}
-              email={selectedEmail}
-              userEmail={accountEmails[selectedEmail.account_id] ?? null}
-              triage={selectedTriage}
-              analyzing={analyzingIds.has(selectedEmail.id)}
-              analysisError={analysisErrors[selectedEmail.id] ?? null}
-              modelReady={modelReady}
-              narrow={narrow}
-              archived={folder === "archive" && !selectedLabelId ? true : !selectedEmail.label_ids.includes("INBOX") && selectedEmail.label_ids.length > 0}
-              onOpenSettings={() => setSettingsOpen(true)}
-              onAnalyze={analyze}
-              onClose={closePane}
-              onToggleRead={setRead}
-              onArchive={archiveThread}
-              labels={labels}
-              onApplyLabels={async (emailId, add, remove) => {
-                const res = await api.applyLabels(emailId, add, remove);
-                patchEmailLabels(emailId, res.label_ids);
-                if (res.warning && !scopeWarned.current) {
-                  scopeWarned.current = true;
-                  setNotice(res.warning);
-                }
-              }}
-              onSuggestLabels={(emailId) => api.suggestLabels(emailId)}
-              onSetDone={async (emailId, done) => {
-                await api.setDone(emailId, done);
-                setTriageByEmail((prev) => (prev[emailId] ? { ...prev, [emailId]: { ...prev[emailId], done } } : prev));
-              }}
-              onSetUserRisk={async (emailId, risk) => {
-                const updated = await api.setUserRisk(emailId, risk);
-                setTriageByEmail((prev) => ({ ...prev, [emailId]: updated }));
-                refreshCounts(selectedAccountId).catch(() => {});
-              }}
-              onSendReply={async (emailId, body, replyAll) => {
-                await api.createGmailDraft(emailId, body, replyAll, true);
-              }}
-              onDraftWithAi={(emailId, instructions, previousDraft) => api.draftReply(emailId, instructions, previousDraft)}
-            />
-          ) : (
-            <div className="pane-empty sm-fade">
-              {selectedEmailId ? (
-                <p className="mono pane-empty-text">Loading…</p>
-              ) : (
-                <>
-                  <p className="pane-empty-title">Nothing open</p>
-                  <p className="pane-empty-text">Pick a conversation on the left, or start a new message.</p>
-                </>
-              )}
-            </div>
-          )}
-        </main>
+            {pane.kind === "compose" ? (
+              <Compose
+                accounts={accounts}
+                defaultAccountId={selectedAccountId ?? (accounts.length === 1 ? accounts[0].id : null)}
+                narrow={narrow}
+                onClose={closePane}
+                onSend={async (accountId, to, cc, subject, body) => {
+                  await api.sendMessage(accountId, to, cc, subject, body);
+                }}
+              />
+            ) : selectedEmail ? (
+              <EmailDetail
+                key={selectedEmail.id}
+                email={selectedEmail}
+                userEmail={accountEmails[selectedEmail.account_id] ?? null}
+                triage={selectedTriage}
+                analyzing={analyzingIds.has(selectedEmail.id)}
+                analysisError={analysisErrors[selectedEmail.id] ?? null}
+                modelReady={modelReady}
+                narrow={narrow}
+                archived={folder === "archive" && !selectedLabelId ? true : !selectedEmail.label_ids.includes("INBOX") && selectedEmail.label_ids.length > 0}
+                onOpenSettings={() => setSettingsOpen(true)}
+                onAnalyze={analyze}
+                onClose={closePane}
+                onToggleRead={setRead}
+                onArchive={archiveThread}
+                labels={labels}
+                onApplyLabels={async (emailId, add, remove) => {
+                  const res = await api.applyLabels(emailId, add, remove);
+                  patchEmailLabels(emailId, res.label_ids);
+                  if (res.warning && !scopeWarned.current) {
+                    scopeWarned.current = true;
+                    setNotice(res.warning);
+                  }
+                }}
+                onSuggestLabels={(emailId) => api.suggestLabels(emailId)}
+                onSetDone={async (emailId, done) => {
+                  await api.setDone(emailId, done);
+                  setTriageByEmail((prev) => (prev[emailId] ? { ...prev, [emailId]: { ...prev[emailId], done } } : prev));
+                }}
+                onSetUserRisk={async (emailId, risk) => {
+                  const updated = await api.setUserRisk(emailId, risk);
+                  setTriageByEmail((prev) => ({ ...prev, [emailId]: updated }));
+                  refreshCounts(selectedAccountId).catch(() => {});
+                }}
+                onSendReply={async (emailId, body, replyAll) => {
+                  await api.createGmailDraft(emailId, body, replyAll, true);
+                }}
+                onDraftWithAi={(emailId, instructions, previousDraft) => api.draftReply(emailId, instructions, previousDraft)}
+              />
+            ) : (
+              <div className="pane-empty sm-fade">
+                {selectedEmailId ? (
+                  <p className="mono pane-empty-text">Loading…</p>
+                ) : (
+                  <>
+                    <p className="pane-empty-title">Nothing open</p>
+                    <p className="pane-empty-text">Pick a conversation on the left, or start a new message.</p>
+                  </>
+                )}
+              </div>
+            )}
+          </main>
+        )}
+        </>
       )}
     </div>
   );
