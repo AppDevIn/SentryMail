@@ -119,6 +119,8 @@ export interface EmbedProgressEvent {
 
 export type Folder = "inbox" | "quarantine";
 export type ListFilter = "all" | "unread" | "needs_action" | "flagged";
+/** List ordering: newest first (backend order) or by triage priority, newest within each tier. */
+export type ListSort = "newest" | "priority";
 
 export interface EmailCounts {
   total: number;
