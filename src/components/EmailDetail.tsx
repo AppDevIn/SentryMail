@@ -117,6 +117,8 @@ function DraftPanel({
       // Redrafting sends the current text so "shorter" / "more formal" revise it, not restart.
       setText(await onDraftWithAi(emailId, guidance, text.trim() ? text : undefined));
       setSent(false);
+      // The instruction has been applied; clear it so the next Enter starts from a blank prompt.
+      setGuidance("");
     } catch (e) {
       setError(String(e));
     } finally {

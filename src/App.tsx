@@ -187,9 +187,12 @@ function App() {
     refreshLabels(selectedAccountId).catch(() => {});
   }, [selectedAccountId, accounts.length, lastSyncedAt, refreshLabels]);
 
-  // While a long sync is fetching, pull new rows in every 25 messages so the inbox fills live.
+  // While a long sync is downloading, pull new rows in as they land so the inbox fills live:
+  // right after the first handful, then every 25 messages. The backend reports in steps of 5.
   useEffect(() => {
-    if (syncProgress?.phase === "fetching" && syncProgress.done % 25 === 0) {
+    if (!syncProgress) return;
+    if (syncProgress.phase !== "fetching" && syncProgress.phase !== "backfill") return;
+    if (syncProgress.done === 5 || syncProgress.done % 25 === 0) {
       refreshEmails(selectedAccountId).catch(() => {});
     }
   }, [syncProgress, selectedAccountId, refreshEmails]);

@@ -262,7 +262,7 @@ pub fn build_summary_prompt(sender: &str, text: &str) -> String {
     )
 }
 
-const LABEL_INSTRUCTIONS: &str = r#"You are a private, fully on-device assistant inside an email client. The user has described what each of their Gmail labels is for. Decide which of those labels apply to the email below, judging by the email's topic (sender, subject, what it is about) against each description. Apply a label when the email belongs to that area of the user's life or work, even if it doesn't match every word of the description; several labels may apply; return an empty list only when none of the descriptions relate to the email.
+const LABEL_INSTRUCTIONS: &str = r#"You are a private, fully on-device assistant inside an email client. The user has described what each of their Gmail labels is for. Decide which of those labels apply to the email below by judging what the email is actually about (its subject and body) against each description. Apply a label only when the email's main topic is the thing the description covers; several labels may apply. Do NOT apply a label merely because the sender, organisation, or a keyword is related to it: a label about one specific event or series does not cover other events, recruitment drives, or general mail from the same group. If no description clearly fits, return an empty list - that is a normal, expected answer.
 
 Respond with ONLY a JSON object of the form {"labels": ["Label name", ...]} (an empty array if none apply)."#;
 

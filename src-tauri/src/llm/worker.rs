@@ -288,4 +288,98 @@ mod e2e_tests {
         let chosen: Vec<String> = v["labels"].as_array().unwrap().iter().filter_map(|x| x.as_str().map(String::from)).collect();
         assert!(chosen.iter().all(|c| names.contains(c)), "grammar must restrict to known names: {chosen:?}");
     }
+
+    /// Label precision against the real model: a single, loosely described "Friday Hacks"
+    /// label (the user's real description, typos included) must NOT be applied to a general
+    /// NUS Hackers coreteam-recruitment email, but MUST be applied to a genuine Friday Hacks
+    /// speaker invite. Run with:
+    ///
+    /// ```sh
+    /// EMAIL_CLIENT_MODEL="$HOME/Library/Application Support/com.emailclient.app/models/gemma.gguf" \
+    ///   cargo test --lib real_model_label -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore]
+    fn real_model_label_does_not_fire_on_related_but_off_topic_mail() {
+        let path = std::env::var("EMAIL_CLIENT_MODEL")
+            .expect("set EMAIL_CLIENT_MODEL to the path of a Gemma GGUF file");
+        let backend = super::super::shared_backend().expect("backend");
+        let model = LlamaModel::load_from_file(&backend, &path, &LlamaModelParams::default())
+            .expect("model load");
+        let ctx_size = NonZeroU32::new(CONTEXT_SIZE).unwrap();
+        let mut ctx = model
+            .new_context(&backend, LlamaContextParams::default().with_n_ctx(Some(ctx_size)))
+            .expect("context");
+
+        let recruitment = PromptInput {
+            sender: "Melody Phyu Sin <melodyps@nushackers.org>",
+            to: "Nur Arifah Binte Mukaral <arifah@nus.edu.sg>",
+            cc: "",
+            subject: "NUS Hackers: Requesting help to publicise NUS Hackers Coreteam Recruitment",
+            body_text: "Dear Ms. Arifah,\n\nI hope you are doing well!\n\nOn behalf of NUS Hackers, I'm writing to seek \
+                        your kind assistance in publicising NUS Hackers Coreteam recruitment for Semester 1. We would be \
+                        truly grateful if you could circulate the email below via the appropriate mailing lists. We're \
+                        intending to publicise it to Year 1 and Year 2 undergraduate students in the School of Computing.\n\n\
+                        Please let us know if any modifications are required and if you need further information from us.\n\n\
+                        Thank you very much for your support!\n\nWarm regards,\nMelody Phyu Sin\nNUS Hackers\n\n\
+                        _______________Email content below________________\n\n\
+                        Don't leave Quackers hanging... spread hacker culture TOGETHER!\n\n\
+                        Join the NUS Hackers Coreteam, and be part of the team empowered to make some of the most impactful \
+                        hacking-related events in NUS and Singapore!\n\n\
+                        Apply to join the Coreteam: https://hckr.cc/2627s1-recruitment\n\
+                        Learn more about what we do: https://www.nushackers.org/about\n\
+                        Applications close on Friday, 28 August\n\n\
+                        Drop us an email at coreteam@nushackers.org if you have any questions!\n\n\
+                        Frequently Asked Questions:\n\nWhat kind of people are we looking for?\nWe are looking for people \
+                        with an understanding of what hacking is and are passionate about spreading hacking culture. We do \
+                        not require hacking experience/projects/skills.\n\nDo I need prior programming experience to join?\n\
+                        No, we've had members whose first programming experience was in CS1010, and that's fine!\n\n\
+                        Do I need to be an SoC student to join?\nNo, we have members who are not from SoC. All NUS students \
+                        are more than welcome to apply!",
+            user_email: "jeya@nushackers.org",
+        };
+        let invite = PromptInput {
+            sender: "Ravern Koh <ravern@nushackers.org>",
+            to: "Dr Tan Wei Ling <weiling@example.org>",
+            cc: "jeya@nushackers.org",
+            subject: "Invitation to speak at Friday Hacks #300",
+            body_text: "Hi Dr Tan,\n\nWe'd love to invite you to give a talk at Friday Hacks, NUS Hackers' weekly talk \
+                        series, on 5 September at 6:30 PM in COM3 Seminar Room 12. A 30-40 minute session on your work \
+                        on compilers would be great. Could you let us know if you're available?\n\nBest,\nRavern",
+            user_email: "jeya@nushackers.org",
+        };
+
+        // The user's real (loose) description, deliberately unimproved.
+        let only_friday = vec![(
+            "Friday Hacks".to_string(),
+            "This are any email targetting friday hacks like invitiation or invite try to avoid clustered ones with multiple event and Friday hacks is just suggested".to_string(),
+        )];
+        // Same, but with sibling labels the user has not described in detail.
+        let with_siblings = vec![
+            only_friday[0].clone(),
+            ("Hackerschool".to_string(), "Hackerschool workshop series: sessions, materials, instructors.".to_string()),
+            ("HackNRoll".to_string(), "Hack&Roll hackathon: sponsors, judges, logistics.".to_string()),
+        ];
+
+        let run = |ctx: &mut LlamaContext, labels: &[(String, String)], input: &PromptInput, what: &str| -> Vec<String> {
+            let prompt = crate::triage::build_label_prompt(labels, input);
+            let names: Vec<String> = labels.iter().map(|(n, _)| n.clone()).collect();
+            let grammar = crate::triage::label_grammar(&names);
+            let started = std::time::Instant::now();
+            let out = generate_one(&model, ctx, &prompt, 120, &grammar, "root").expect("labels");
+            eprintln!("--- {what} ({:.1}s) ---\n{out}", started.elapsed().as_secs_f32());
+            let v: serde_json::Value = serde_json::from_str(&out).expect("labels is JSON");
+            v["labels"].as_array().unwrap().iter().filter_map(|x| x.as_str().map(String::from)).collect()
+        };
+
+        let r1 = run(&mut ctx, &only_friday, &recruitment, "recruitment, only Friday Hacks described");
+        let r2 = run(&mut ctx, &with_siblings, &recruitment, "recruitment, with sibling labels");
+        let r3 = run(&mut ctx, &only_friday, &invite, "speaker invite, only Friday Hacks described");
+        let r4 = run(&mut ctx, &with_siblings, &invite, "speaker invite, with sibling labels");
+
+        assert!(!r1.iter().any(|l| l == "Friday Hacks"), "recruitment email must not get Friday Hacks: {r1:?}");
+        assert!(!r2.iter().any(|l| l == "Friday Hacks"), "recruitment email must not get Friday Hacks: {r2:?}");
+        assert!(r3.iter().any(|l| l == "Friday Hacks"), "genuine Friday Hacks invite must get the label: {r3:?}");
+        assert!(r4.iter().any(|l| l == "Friday Hacks"), "genuine Friday Hacks invite must get the label: {r4:?}");
+    }
 }

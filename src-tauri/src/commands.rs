@@ -331,6 +331,9 @@ pub async fn sync_now(
 /// Upper bound on inbox messages pulled by a full (non-incremental) sync.
 const MAX_FULL_SYNC_MESSAGES: usize = 1000;
 const LIST_PAGE_SIZE: u32 = 100;
+/// How many `messages.get` calls are in flight at once. Gmail allows 250 quota units/s per
+/// user and a full-format get costs 5, so 8 in flight stays comfortably under the ceiling.
+const FETCH_CONCURRENCY: usize = 8;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SyncProgressEvent {
@@ -586,8 +589,73 @@ pub async fn inline_images(app: AppHandle, state: State<'_, AppState>, email_id:
     Ok(out)
 }
 
-/// Full listing: page through the inbox (newest first) up to `MAX_FULL_SYNC_MESSAGES`,
-/// storing anything we don't have yet.
+/// `upsert_message` with exponential backoff on Gmail rate-limit / transient server errors.
+/// Safe to retry: the fetch is idempotent and the upsert is keyed on the Gmail message id.
+async fn upsert_message_retrying(
+    state: &State<'_, AppState>,
+    client: &GmailClient,
+    account_id: i64,
+    message_id: &str,
+) -> Result<bool, String> {
+    const MAX_ATTEMPTS: u32 = 4;
+    let mut delay = std::time::Duration::from_millis(500);
+    let mut attempt = 1;
+    loop {
+        match upsert_message(state, client, account_id, message_id).await {
+            Err(e) if attempt < MAX_ATTEMPTS && is_retryable_gmail_error(&e) => {
+                tokio::time::sleep(delay).await;
+                delay *= 2;
+                attempt += 1;
+            }
+            other => return other,
+        }
+    }
+}
+
+fn is_retryable_gmail_error(e: &str) -> bool {
+    // reqwest's `error_for_status` messages embed the status code, e.g.
+    // "HTTP status client error (429 Too Many Requests) for url (...)".
+    e.contains("(429 ") || e.contains("(500 ") || e.contains("(502 ") || e.contains("(503 ") || e.contains("(504 ")
+}
+
+/// Fetches and stores `ids` with bounded concurrency, emitting `phase` progress as
+/// `offset + completed` out of `total`. Returns how many of them were new.
+async fn fetch_messages(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    client: &GmailClient,
+    account_id: i64,
+    email_address: &str,
+    ids: &[String],
+    phase: &str,
+    offset: u32,
+    total: Option<u32>,
+) -> Result<u32, String> {
+    use futures_util::stream::{self, StreamExt};
+    // Built in a loop rather than a closure: a closure here trips rustc's
+    // higher-ranked lifetime inference inside the `#[tauri::command]` future.
+    let mut pending = Vec::with_capacity(ids.len());
+    for id in ids {
+        pending.push(upsert_message_retrying(state, client, account_id, id));
+    }
+    let mut results = stream::iter(pending).buffer_unordered(FETCH_CONCURRENCY);
+    let mut new_count = 0u32;
+    let mut completed = 0u32;
+    while let Some(result) = results.next().await {
+        if result? {
+            new_count += 1;
+        }
+        completed += 1;
+        if completed % 5 == 0 || completed as usize == ids.len() {
+            emit_sync_progress(app, email_address, phase, offset + completed, total);
+        }
+    }
+    Ok(new_count)
+}
+
+/// Full listing: page through the inbox (newest first) up to `MAX_FULL_SYNC_MESSAGES`.
+/// Each page is fetched (concurrently) as soon as it is listed, so the newest mail lands
+/// in the inbox within seconds instead of after the whole listing completes.
 async fn sync_full(
     app: &AppHandle,
     state: &State<'_, AppState>,
@@ -595,31 +663,29 @@ async fn sync_full(
     account_id: i64,
     email_address: &str,
 ) -> Result<u32, String> {
-    let mut ids: Vec<String> = Vec::new();
     let mut page_token: Option<String> = None;
     let mut estimate: Option<u32> = None;
+    let mut listed = 0usize;
+    let mut new_count = 0u32;
+    emit_sync_progress(app, email_address, "listing", 0, None);
     loop {
         let page = client.list_inbox_page(LIST_PAGE_SIZE, page_token.as_deref()).await?;
         if estimate.is_none() {
             estimate = page.estimate.map(|e| e.min(MAX_FULL_SYNC_MESSAGES as u64) as u32);
         }
-        ids.extend(page.ids);
-        emit_sync_progress(app, email_address, "listing", ids.len() as u32, estimate);
+        let mut ids = page.ids;
+        ids.truncate(MAX_FULL_SYNC_MESSAGES - listed);
+        let offset = listed as u32;
+        listed += ids.len();
+        // Make sure the total never reads lower than what we have already pulled.
+        let total = Some(estimate.unwrap_or(0).max(listed as u32));
+        new_count += fetch_messages(
+            app, state, client, account_id, email_address, &ids, "fetching", offset, total,
+        )
+        .await?;
         page_token = page.next_page_token;
-        if page_token.is_none() || ids.len() >= MAX_FULL_SYNC_MESSAGES {
+        if page_token.is_none() || listed >= MAX_FULL_SYNC_MESSAGES {
             break;
-        }
-    }
-    ids.truncate(MAX_FULL_SYNC_MESSAGES);
-
-    let total = ids.len() as u32;
-    let mut new_count = 0;
-    for (i, message_id) in ids.iter().enumerate() {
-        if upsert_message(state, client, account_id, message_id).await? {
-            new_count += 1;
-        }
-        if i % 5 == 0 || i + 1 == ids.len() {
-            emit_sync_progress(app, email_address, "fetching", i as u32 + 1, Some(total));
         }
     }
     Ok(new_count)
@@ -669,15 +735,10 @@ async fn sync_backfill(
         .list_inbox_query_page(BACKFILL_PAGE, None, Some(&format!("before:{boundary}")))
         .await?;
     let total = page.ids.len() as u32;
-    let mut added = 0;
-    for (i, id) in page.ids.iter().enumerate() {
-        if upsert_message(state, client, account_id, id).await? {
-            added += 1;
-        }
-        if i % 5 == 0 || i + 1 == page.ids.len() {
-            emit_sync_progress(app, email_address, "backfill", i as u32 + 1, Some(total));
-        }
-    }
+    let added = fetch_messages(
+        app, state, client, account_id, email_address, &page.ids, "backfill", 0, Some(total),
+    )
+    .await?;
     if added == 0 {
         let db = state.db.lock().map_err(|e| e.to_string())?;
         db.execute(
