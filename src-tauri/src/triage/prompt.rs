@@ -1,3 +1,17 @@
+/// Gemma's chat-template turn markers.
+///
+/// **Gemma 4 changed these.** Its `tokenizer.json` contains no `<start_of_turn>` token at all;
+/// the canonical template (shipped as `chat_template.jinja` with the model) uses
+/// `<|turn>role\n` ... `<turn|>\n`. Writing the old Gemma 2/3 markers here does not fail
+/// loudly - they simply tokenize as ordinary text instead of control tokens, quietly degrading
+/// every prompt in the app.
+///
+/// If you point the app at a Gemma 2/3 GGUF instead, change these back to
+/// `<start_of_turn>` / `<end_of_turn>` - and verify against that model's own
+/// `chat_template.jinja` rather than trusting documentation.
+const TURN_START: &str = "<|turn>";
+const TURN_END: &str = "<turn|>";
+
 pub struct PromptInput<'a> {
     pub sender: &'a str,
     /// Raw "To" / "Cc" header values ("" when not recorded).
@@ -61,9 +75,9 @@ its own line (infer it from their email address if it isn't stated).
 
 Respond with ONLY a single JSON object matching the required schema. No prose before or after."#;
 
-/// Builds the full prompt, wrapped in Gemma's chat template. `<start_of_turn>`/
-/// `<end_of_turn>` are tokenized as real control tokens (not literal text) -
-/// llama-cpp-2's `str_to_token` always parses special tokens.
+/// Builds the full prompt, wrapped in Gemma's chat template (see `TURN_START`/`TURN_END`).
+/// The markers tokenize as real control tokens rather than literal text - llama-cpp-2's
+/// `str_to_token` always parses special tokens.
 pub fn build_triage_prompt(input: &PromptInput) -> String {
     let (newest, stripped) = strip_quoted_history(input.body_text);
     let body = truncate_chars(&newest, MAX_BODY_CHARS);
@@ -76,11 +90,11 @@ pub fn build_triage_prompt(input: &PromptInput) -> String {
         ""
     };
     format!(
-        "<start_of_turn>user\n{INSTRUCTIONS}\n\n\
+        "{TURN_START}user\n{INSTRUCTIONS}\n\n\
          The user's own email address is: {}\n\
          Addressing: {}\n\
          From: {}\nTo: {}\nCc: {}\nSubject: {}\n\n\
-         Body (newest message only{}):\n{}\n<end_of_turn>\n<start_of_turn>model\n",
+         Body (newest message only{}):\n{}\n{TURN_END}\n{TURN_START}model\n",
         input.user_email, addressing, input.sender, to, cc, input.subject, history_note, body
     )
 }
@@ -240,11 +254,11 @@ pub fn build_reply_prompt_with(
         None => String::new(),
     };
     format!(
-        "<start_of_turn>user\n{REPLY_INSTRUCTIONS}\n\n{persona}{guidance}\n\n\
+        "{TURN_START}user\n{REPLY_INSTRUCTIONS}\n\n{persona}{guidance}\n\n\
          The user's own email address is: {}\n\
          Addressing: {}\n\
          From: {}\nTo: {}\nCc: {}\nSubject: {}\n\n\
-         Body (newest message only{}):\n{}{revision}\n<end_of_turn>\n<start_of_turn>model\n",
+         Body (newest message only{}):\n{}{revision}\n{TURN_END}\n{TURN_START}model\n",
         input.user_email, addressing, input.sender, to, cc, input.subject, history_note, body
     )
 }
@@ -257,7 +271,7 @@ Respond with ONLY a JSON object of the form {"summary": "..."}."#;
 pub fn build_summary_prompt(sender: &str, text: &str) -> String {
     let body = truncate_chars(text, 2500);
     format!(
-        "<start_of_turn>user\n{SUMMARY_INSTRUCTIONS}\n\nFrom: {}\n\nMessage:\n{}\n<end_of_turn>\n<start_of_turn>model\n",
+        "{TURN_START}user\n{SUMMARY_INSTRUCTIONS}\n\nFrom: {}\n\nMessage:\n{}\n{TURN_END}\n{TURN_START}model\n",
         sender, body
     )
 }
@@ -275,8 +289,8 @@ pub fn build_label_prompt(labels: &[(String, String)], input: &PromptInput) -> S
         list.push_str(&format!("- {name}: {description}\n"));
     }
     format!(
-        "<start_of_turn>user\n{LABEL_INSTRUCTIONS}\n\nThe user's labels:\n{list}\n\
-         From: {}\nTo: {}\nSubject: {}\n\nBody:\n{}\n<end_of_turn>\n<start_of_turn>model\n",
+        "{TURN_START}user\n{LABEL_INSTRUCTIONS}\n\nThe user's labels:\n{list}\n\
+         From: {}\nTo: {}\nSubject: {}\n\nBody:\n{}\n{TURN_END}\n{TURN_START}model\n",
         input.sender, input.to, input.subject, body
     )
 }
@@ -342,10 +356,10 @@ pub fn build_meeting_prompt(thread: &[ThreadMessage], user_email: &str, today: &
         ));
     }
     format!(
-        "<start_of_turn>user\n{MEETING_INSTRUCTIONS}\n\n\
+        "{TURN_START}user\n{MEETING_INSTRUCTIONS}\n\n\
          The user's own email address is: {}\n\
          Today's date is: {}\n\n\
-         Thread (oldest first):\n{}<end_of_turn>\n<start_of_turn>model\n",
+         Thread (oldest first):\n{}{TURN_END}\n{TURN_START}model\n",
         user_email, today, transcript
     )
 }
@@ -377,8 +391,8 @@ mod tests {
         assert!(prompt.contains("Are you free at noon?"));
         assert!(prompt.contains("bob@example.com"));
         assert!(prompt.contains("directly addressed"));
-        assert!(prompt.starts_with("<start_of_turn>user\n"));
-        assert!(prompt.ends_with("<start_of_turn>model\n"));
+        assert!(prompt.starts_with(&format!("{TURN_START}user\n")));
+        assert!(prompt.ends_with(&format!("{TURN_START}model\n")));
     }
 
     #[test]
@@ -480,8 +494,8 @@ mod tests {
         // Both sides must be visible - that is the whole point of scanning at thread level.
         assert!(p.contains("Can we do Thursday 3pm?"));
         assert!(p.contains("Thursday 3pm works for me."));
-        assert!(p.starts_with("<start_of_turn>user\n"));
-        assert!(p.ends_with("<start_of_turn>model\n"));
+        assert!(p.starts_with(&format!("{TURN_START}user\n")));
+        assert!(p.ends_with(&format!("{TURN_START}model\n")));
     }
 
     #[test]
@@ -545,7 +559,7 @@ mod tests {
         assert!(!prompt.contains("> old"));
         assert!(prompt.contains("\"draft_reply\""));
         assert!(prompt.contains("only CC'd"));
-        assert!(prompt.ends_with("<start_of_turn>model\n"));
+        assert!(prompt.ends_with(&format!("{TURN_START}model\n")));
     }
 
     #[test]

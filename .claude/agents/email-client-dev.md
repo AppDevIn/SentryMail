@@ -37,8 +37,11 @@ written on - it is not present in this checkout.)
     JSON matching the triage schema (3-way discriminated union on `action.kind`: `draft_reply` /
     `warning` / `none`). This is what makes a small on-device model's output reliably parseable
     instead of free-form prose - don't relax this back to unconstrained sampling.
-- `src-tauri/src/triage/` - `prompt.rs` builds the full classify/scam-check/action prompt
-  (Gemma chat template: `<start_of_turn>user...\n<start_of_turn>model\n`); `mod.rs` has the
+- `src-tauri/src/triage/` - `prompt.rs` builds the full classify/scam-check/action prompt.
+  The chat-template markers live in the `TURN_START`/`TURN_END` consts at the top of that file:
+  **Gemma 4 uses `<|turn>` / `<turn|>`, not Gemma 2/3's `<start_of_turn>` / `<end_of_turn>`**
+  (its tokenizer has no `start_of_turn` token at all). Verify against the model's own
+  `chat_template.jinja`, never against documentation; `mod.rs` has the
   `RawTriageOutput`/`RawAction` serde types matching the grammar, `triage_email()`, and DB
   persistence. **On any parse failure, `triage_status` must be `"parse_error"` and `risk` must
   never silently be `"safe"`** - it defaults to `"caution"` as a fail-safe. Don't weaken this.

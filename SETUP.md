@@ -77,8 +77,11 @@ and place it at `<app_data_dir>/models/gemma.gguf`.
 - Note: this is Gemma's **current (4th) generation** as of this writing - Gemma 2/3 GGUF
   files still work with this app (same `llama-cpp-2` backend) if you already have one, but
   prefer Gemma 4 for a new setup. Double check the model card for the exact chat template
-  (`<start_of_turn>`/`<end_of_turn>`) before assuming it's unchanged from earlier Gemma
-  generations - `src-tauri/src/triage/prompt.rs` hardcodes that template.
+  before assuming it's unchanged from earlier Gemma generations.
+  This already bit us once: **Gemma 4 uses `<|turn>` / `<turn|>`**, while Gemma 2/3 used
+  `<start_of_turn>` / `<end_of_turn>`. The markers are the `TURN_START`/`TURN_END` consts at
+  the top of `src-tauri/src/triage/prompt.rs` - switch them if you use a Gemma 2/3 GGUF.
+  Check the model's own `chat_template.jinja`/`tokenizer.json`, not the docs.
 
 `<app_data_dir>` on Linux is typically `~/.local/share/com.emailclient.app/`; on macOS,
 `~/Library/Application Support/com.emailclient.app/`; on Windows,
