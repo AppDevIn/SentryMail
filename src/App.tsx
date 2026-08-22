@@ -585,8 +585,11 @@ function App() {
         AUTO_SCAN_THREADS_PER_TICK,
       );
       if (found > 0) await refreshMeetings(calendarMonthRef.current, selectedAccountId);
-    } catch {
-      // ignored on purpose - see above
+    } catch (e) {
+      // Not silent any more: a background pass that fails quietly is indistinguishable from one
+      // that never runs, which cost real debugging time. Reported as a notice, not an error
+      // banner, so it informs without interrupting.
+      setNotice(`Background meeting scan failed: ${String(e)}`);
     } finally {
       scanningRef.current = false;
     }

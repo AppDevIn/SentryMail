@@ -2569,8 +2569,13 @@ pub async fn scan_meetings(
     // Bound the work per run. The background pass calls this every sync; without a cap the
     // first run would grind through the whole backlog (hundreds of threads, tens of seconds
     // each) and never finish. Newest-first ordering means the cap keeps the most relevant.
+    let query_started = std::time::Instant::now();
     let threads = threads_needing_scan(&state, account_id, max_threads)?;
     let total = threads.len() as u32;
+    eprintln!(
+        "[meetings] scan start: {total} thread(s), max_threads={max_threads:?}, stop_after={stop_after:?}, query {}ms",
+        query_started.elapsed().as_millis()
+    );
     let today = chrono::Local::now().format("%Y-%m-%d").to_string();
 
     let mut found = 0u32;
@@ -2602,6 +2607,7 @@ pub async fn scan_meetings(
             break;
         }
     }
+    eprintln!("[meetings] scan done: {found} found across {total} thread(s)");
     Ok(found)
 }
 
