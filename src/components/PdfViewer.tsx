@@ -83,7 +83,7 @@ export default function PdfViewer({ data, onFailed }: PdfViewerProps) {
         </button>
         {pageCount > 0 && (
           <span className="mono pdf-count">
-            {pageCount} {pageCount === 1 ? "PAGE" : "PAGES"}
+            {pageCount} {pageCount === 1 ? "page" : "pages"}
           </span>
         )}
       </div>
@@ -156,8 +156,8 @@ function PdfPage({
   return (
     <div className="preview-page">
       <span className="mono preview-page-num">
-        PAGE {pageNumber}
-        {ready ? "" : " · LOADING"}
+        page {pageNumber}
+        {ready ? "" : " · loading"}
       </span>
       <canvas ref={canvasRef} />
     </div>

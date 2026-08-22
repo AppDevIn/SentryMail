@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { api } from "./api";
+import { effectiveRisk } from "./format";
 import type {
   AccountDto,
   ApiFolder,
@@ -111,8 +112,13 @@ function App() {
   const scopeWarned = useRef(false);
   const narrow = useNarrow();
 
-  /** The folder value the API expects for the current view: label views ignore archiving (ADR 0010). */
-  const apiFolder = useCallback((): ApiFolder => (selectedLabelRef.current ? "all" : folderRef.current), []);
+  /**
+   * The folder value the API expects for the current view: label views ignore archiving
+   * (ADR 0010), and `calendar` is a meetings view rather than a mail folder, so mail requests
+   * made while it is open stay on the inbox.
+   */
+  const toApiFolder = (f: Folder): ApiFolder => (f === "calendar" ? "inbox" : f);
+  const apiFolder = useCallback((): ApiFolder => (selectedLabelRef.current ? "all" : toApiFolder(folderRef.current)), []);
 
   const loadTriage = useCallback(async (list: EmailDto[]) => {
     const results = await Promise.all(list.map((e) => api.getTriageResult(e.id)));
@@ -641,7 +647,7 @@ function App() {
         {showList && (
           <EmailList
             title={viewTitle}
-            folder={selectedLabelId ? "all" : folder}
+            folder={selectedLabelId ? "all" : toApiFolder(folder)}
             labelsById={labelsById}
             emails={emails}
             total={counts.total}

@@ -1859,7 +1859,6 @@ select:focus-visible {
 
 .preview-meta {
   flex: 0 0 auto;
-  font-size: 9.5px;
   color: var(--text-muted);
 }
 
@@ -1917,7 +1916,6 @@ select:focus-visible {
 }
 
 .preview-page-num {
-  font-size: 9.5px;
   color: var(--text-muted);
 }
 
@@ -1973,7 +1971,6 @@ select:focus-visible {
 
 .pdf-zoom,
 .pdf-count {
-  font-size: 9.5px;
   color: var(--text-muted);
 }
 

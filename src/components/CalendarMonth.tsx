@@ -16,7 +16,7 @@ interface CalendarMonthProps {
   onOpenSettings: () => void;
 }
 
-const WEEKDAYS = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"];
+const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
 function startOfMonth(d: Date): Date {
   return new Date(d.getFullYear(), d.getMonth(), 1);
@@ -114,7 +114,7 @@ export function CalendarMonth({
           <h2>{monthLabel}</h2>
           <span className="mono calendar-sub">
             {meetings.length === 0
-              ? "NO MEETINGS THIS MONTH"
+              ? "No meetings this month"
               : `${meetings.length} MEETING${meetings.length === 1 ? "" : "S"} · ${confirmedCount} WITH LINKS`}
           </span>
         </div>
@@ -124,21 +124,21 @@ export function CalendarMonth({
             className="btn btn-mini mono"
             onClick={() => changeMonth(new Date(month.getFullYear(), month.getMonth() - 1, 1))}
           >
-            ‹ PREV
+            ‹ Prev
           </button>
           <button
             type="button"
             className="btn btn-mini mono"
             onClick={() => changeMonth(startOfMonth(new Date()))}
           >
-            TODAY
+            Today
           </button>
           <button
             type="button"
             className="btn btn-mini mono"
             onClick={() => changeMonth(new Date(month.getFullYear(), month.getMonth() + 1, 1))}
           >
-            NEXT ›
+            Next ›
           </button>
           <button
             type="button"
@@ -149,9 +149,9 @@ export function CalendarMonth({
           >
             {scanning
               ? scanProgress
-                ? `SCANNING ${scanProgress.done}/${scanProgress.total}…`
-                : "SCANNING…"
-              : "SCAN MAIL"}
+                ? `Scanning ${scanProgress.done}/${scanProgress.total}…`
+                : "Scanning…"
+              : "Scan mail"}
           </button>
         </div>
       </header>
@@ -262,10 +262,10 @@ export function CalendarMonth({
 
       <footer className="calendar-legend mono">
         <span className="calendar-legend-item">
-          <span className="calendar-swatch is-confirmed" /> CONFIRMED · HAS LINK
+          <span className="calendar-swatch is-confirmed" /> Confirmed · has link
         </span>
         <span className="calendar-legend-item">
-          <span className="calendar-swatch is-possible" /> POSSIBLE · BOTH SIDES AGREED
+          <span className="calendar-swatch is-possible" /> Possible · both sides agreed
         </span>
         <span className="calendar-legend-note">
           Times are read from the email text and may be wrong - open the email to check.
