@@ -354,15 +354,15 @@ mod db_tests {
 
     #[test]
     fn host_match_only_after_promotion_and_never_for_shared_hosting() {
-        // Three URLs on an attacker domain promotes the host, so an unlisted fourth URL on it hits.
-        let (db, id) = fixture("see http://bad-domain.com/unlisted-page", None, "a@b.com");
+        // Three URLs on a bare-IP host promotes it, so an unlisted fourth URL there hits.
+        let (db, id) = fixture("see http://177.70.102.228/unlisted-page", None, "a@b.com");
         store_feed(
             &db,
             Source::PhishTank,
             &[
-                "http://bad-domain.com/a".into(),
-                "http://bad-domain.com/b".into(),
-                "http://bad-domain.com/c".into(),
+                "http://177.70.102.228/a".into(),
+                "http://177.70.102.228/b".into(),
+                "http://177.70.102.228/c".into(),
             ],
             None,
         )
@@ -391,11 +391,11 @@ mod db_tests {
     #[test]
     fn host_match_alone_does_not_stain_the_sender() {
         // Host matching is an inference, not a fact; only exact hits are strong enough.
-        let (db, id) = fixture("see http://bad-domain.com/unlisted", None, "maybe@innocent.com");
+        let (db, id) = fixture("see http://177.70.102.228/unlisted", None, "maybe@innocent.com");
         store_feed(
             &db,
             Source::PhishTank,
-            &["http://bad-domain.com/a".into(), "http://bad-domain.com/b".into(), "http://bad-domain.com/c".into()],
+            &["http://177.70.102.228/a".into(), "http://177.70.102.228/b".into(), "http://177.70.102.228/c".into()],
             None,
         )
         .unwrap();

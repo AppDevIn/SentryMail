@@ -53,19 +53,38 @@ const SHARED_HOSTING_SUFFIXES: &[&str] = &[
 ];
 
 /// How many distinct listed URLs on one host before we call the host itself malicious.
-///
-/// One phishing page on a host is most often a *compromised* legitimate site - a hacked
-/// WordPress install with a phishing kit dropped in a subdirectory. Blocking the whole domain
-/// there would be wrong and highly visible. Several distinct phishing URLs on one host is a
-/// much better signal that the host belongs to the attacker.
 pub const HOST_PROMOTION_THRESHOLD: i64 = 3;
 
 /// Whether a host may be promoted to a host-level block.
+///
+/// **Only bare IP addresses are promotable.** This was measured against the real feeds rather
+/// than assumed, and a count-plus-denylist rule turned out to be catastrophic: 72k PhishTank +
+/// 62k URLhaus URLs promote `raw.githubusercontent.com` (5725 URLs), `bit.ly` (1829),
+/// `github.com` (1055), `www.dropbox.com` (647), `tinyurl.com`, `t.co` and more. Link
+/// shorteners and large user-content platforms carry enormous volumes of malicious URLs while
+/// being entirely legitimate, and no hand-written denylist keeps up with that.
+///
+/// A bare IP in an email link is different: legitimate senders use domain names, so an IP host
+/// serving several confirmed phishing URLs is attacker infrastructure. On the same data this
+/// covers 1635 hosts and 24619 URLs - real coverage, no false-positive cliff.
+///
+/// Named hosts therefore match by exact URL only. Re-enabling them needs a domain-popularity
+/// list (Tranco or similar) shipped locally, not a longer denylist.
 pub fn is_promotable_host(host: &str, distinct_url_count: i64) -> bool {
     if distinct_url_count < HOST_PROMOTION_THRESHOLD {
         return false;
     }
-    !is_shared_hosting(host)
+    if is_shared_hosting(host) {
+        return false;
+    }
+    is_bare_ip(host)
+}
+
+/// True when the host is a literal IPv4/IPv6 address rather than a domain name.
+pub fn is_bare_ip(host: &str) -> bool {
+    let h = host.trim();
+    let h = h.strip_prefix('[').and_then(|r| r.strip_suffix(']')).unwrap_or(h);
+    h.parse::<std::net::IpAddr>().is_ok()
 }
 
 /// True when the host is (or sits under) a known multi-tenant hosting domain.
@@ -100,14 +119,36 @@ mod tests {
     }
 
     #[test]
-    fn several_urls_on_an_attacker_host_promote() {
-        assert!(is_promotable_host("dbs-secure-verify.com", 3));
-        assert!(is_promotable_host("dbs-secure-verify.com", 40));
+    fn several_urls_on_a_bare_ip_promote() {
+        assert!(is_promotable_host("177.70.102.228", 3));
+        assert!(is_promotable_host("5.182.210.61", 40));
+        assert!(is_promotable_host("[2001:db8::1]", 5));
+    }
+
+    #[test]
+    fn named_hosts_are_never_promoted_however_many_hits() {
+        // Measured on the real feeds: promoting named hosts would block raw.githubusercontent.com
+        // (5725 listed URLs), bit.ly (1829), github.com (1055) and dropbox.com (647).
+        for host in ["raw.githubusercontent.com", "bit.ly", "github.com", "www.dropbox.com", "t.co"] {
+            assert!(!is_promotable_host(host, 5000), "{host} must not be promoted");
+        }
+        // Even an obviously attacker-looking domain stays exact-match only - we cannot tell it
+        // apart from a popular one without a domain-popularity list.
+        assert!(!is_promotable_host("dbs-secure-verify.com", 40));
+    }
+
+    #[test]
+    fn recognises_bare_ips() {
+        assert!(is_bare_ip("177.70.102.228"));
+        assert!(is_bare_ip("[2001:db8::1]"));
+        assert!(!is_bare_ip("example.com"));
+        assert!(!is_bare_ip("1.2.3.4.example.com"));
     }
 
     #[test]
     fn shared_hosting_never_promotes_however_many_hits() {
-        // The failure that would destroy trust in every warning the app gives.
+        // Redundant now that only bare IPs promote, but kept as a second line of defence in
+        // case named-host promotion is ever reintroduced behind a popularity list.
         assert!(!is_promotable_host("sites.google.com", 500));
         assert!(!is_promotable_host("evil-kit.firebaseapp.com", 99));
         assert!(!is_promotable_host("someone.github.io", 50));
