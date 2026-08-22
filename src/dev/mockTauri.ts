@@ -537,8 +537,18 @@ window.__TAURI_INTERNALS__ = {
       case "sync_now":
         await delay(500);
         return { accounts_synced: 1, new_emails: 0, errors: [] };
+      // Calendar/meetings commands: the fixture set has no meetings, but list_meetings must
+      // still return an array - App maps and filters over it on every render.
+      case "list_meetings":
+        return [];
+      case "scan_meetings":
+        return 0;
+      case "dismiss_meeting":
+        return null;
       case "plugin:event|listen":
         return 1;
+      case "plugin:event|unlisten":
+        return null;
       default:
         return null;
     }
@@ -547,5 +557,9 @@ window.__TAURI_INTERNALS__ = {
   unregisterCallback: () => {},
   convertFileSrc: (p: string) => p,
 };
+
+// Newer @tauri-apps/api routes unlisten through its own internals object. Without this every
+// listen() cleanup throws, React unmounts the tree, and the page renders blank.
+window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => {} };
 
 export {};
