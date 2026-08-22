@@ -2,6 +2,7 @@ mod auth;
 mod commands;
 mod db;
 mod gmail;
+mod images;
 mod llm;
 mod meetings;
 mod search;
@@ -61,6 +62,7 @@ pub fn run() {
             commands::list_attachments,
             commands::open_attachment,
             commands::inline_images,
+            commands::fetch_remote_images,
             commands::sync_now,
             commands::model_status,
             commands::load_model,

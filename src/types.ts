@@ -190,6 +190,27 @@ export interface InlineImageDto {
   data_base64: string;
 }
 
+/** An inline image we deliberately did not fetch, with a reason to show the user. */
+export interface SkippedInlineImageDto {
+  content_id: string;
+  filename: string;
+  size: number;
+  reason: string;
+}
+
+export interface InlineImagesDto {
+  images: InlineImageDto[];
+  skipped: SkippedInlineImageDto[];
+}
+
+/** A remote image fetched by the backend, or the reason it is missing. */
+export interface RemoteImageDto {
+  url: string;
+  mime_type: string | null;
+  data_base64: string | null;
+  error: string | null;
+}
+
 export interface SyncProgressEvent {
   account: string;
   /** "listing" | "fetching" | "history" | "done" */

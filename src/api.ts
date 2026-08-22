@@ -12,7 +12,8 @@ import type {
   MeetingDto,
   EmailCounts,
   EmailDto,
-  InlineImageDto,
+  InlineImagesDto,
+  RemoteImageDto,
   SetReadResult,
   ModelStatus,
   SearchResultDto,
@@ -94,8 +95,14 @@ export const api = {
   /** Downloads the attachment to the app cache and opens it with the default app. */
   openAttachment: (emailId: number, attachmentId: string) =>
     invoke<string>("open_attachment", { emailId, attachmentId }),
-  /** Inline (cid:) images as data URIs for the sandboxed HTML view. */
-  inlineImages: (emailId: number) => invoke<InlineImageDto[]>("inline_images", { emailId }),
+  /** Inline (cid:) images as data URIs for the sandboxed HTML view, plus any we skipped. */
+  inlineImages: (emailId: number) => invoke<InlineImagesDto>("inline_images", { emailId }),
+  /**
+   * Fetches the message's remote images in Rust and returns them as data, so the sandboxed
+   * frame can show them without ever making a network request itself.
+   */
+  fetchRemoteImages: (emailId: number, urls: string[]) =>
+    invoke<RemoteImageDto[]>("fetch_remote_images", { emailId, urls }),
 
   unsubscribeInfo: (emailId: number) =>
     invoke<UnsubscribeInfo>("unsubscribe_info", { emailId }),

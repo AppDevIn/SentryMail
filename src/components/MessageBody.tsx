@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { AttachmentDto, EmailDto, InlineImageDto, Risk } from "../types";
+import type { AttachmentDto, EmailDto, InlineImageDto, RemoteImageDto, SkippedInlineImageDto, Risk } from "../types";
 import { api } from "../api";
 import { cleanUrl, linkLabel, splitQuotedHistory } from "../format";
 
@@ -16,6 +16,104 @@ function inlineCidImages(html: string, images: InlineImageDto[]): string {
     const img = images.find((i) => i.content_id === cid || i.content_id === decodeURIComponent(cid));
     return img ? `${pre}data:${img.mime_type};base64,${img.data_base64}` : m;
   });
+}
+
+/** The cids the body actually references, so an unreferenced inline image can still be found. */
+export function referencedCids(html: string): Set<string> {
+  const out = new Set<string>();
+  for (const m of html.matchAll(/(?:src\s*=\s*["']?|url\(\s*["']?)cid:([^"'\s)>]+)/gi)) {
+    const cid = m[1];
+    out.add(cid);
+    // Mirror the lookup in inlineCidImages, which accepts either form.
+    try {
+      out.add(decodeURIComponent(cid));
+    } catch {
+      /* a malformed escape just means the raw form is the only one worth having */
+    }
+  }
+  return out;
+}
+
+/** A flat neutral block, so a picture that failed reads as "missing" rather than "app broken". */
+const MISSING_IMAGE =
+  "data:image/svg+xml;base64," +
+  btoa(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="240" height="140"><rect width="240" height="140" fill="#e6e8eb"/></svg>',
+  );
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Swaps the remote URLs the backend fetched for data URIs.
+ *
+ * Works on the raw URL string rather than per-context parsing, so one pass covers `src`,
+ * `srcset` candidates, `background`, inline `style` `url()` and `<style>` `url()` alike. The
+ * entity-encoded form is replaced too: the DOM hands us decoded URLs, but the HTML still holds
+ * `&amp;`.
+ */
+function inlineRemoteImages(html: string, images: RemoteImageDto[]): string {
+  if (!images.length) return html;
+  let out = html;
+  // Longest first: when one URL is a prefix of another (`…/hero.png` vs `…/hero.png?w=2`, which
+  // srcset produces constantly), replacing the short one first would corrupt the long one.
+  const byLength = [...images].sort((a, b) => b.url.length - a.url.length);
+  for (const img of byLength) {
+    const replacement = img.data_base64 ? `data:${img.mime_type};base64,${img.data_base64}` : MISSING_IMAGE;
+    for (const form of new Set([img.url, img.url.replace(/&/g, "&amp;")])) {
+      out = out.replace(new RegExp(escapeRegExp(form), "g"), replacement);
+    }
+  }
+  return out;
+}
+
+/** Every remote URL the rendered document actually references, in document order, deduped. */
+export function collectRemoteUrls(doc: Document): string[] {
+  const found = new Set<string>();
+  const add = (raw: string | null | undefined) => {
+    const v = (raw ?? "").trim();
+    if (/^https?:\/\//i.test(v)) found.add(v);
+  };
+  const addFromCss = (text: string) => {
+    for (const m of text.matchAll(/url\(\s*(['"]?)(https?:[^'")]+)\1\s*\)/gi)) add(m[2]);
+  };
+  const addFromSrcset = (raw: string | null) => {
+    for (const candidate of (raw ?? "").split(",")) add(candidate.trim().split(/\s+/)[0]);
+  };
+
+  for (const el of doc.querySelectorAll("*")) {
+    // Tag name, not `instanceof`: these elements live in the iframe's realm, so they are not
+    // instances of *this* window's HTMLImageElement and the check would silently never match.
+    if (el.tagName === "IMG") add(el.getAttribute("src"));
+    // <body background> and <td background> are still common in marketing mail.
+    add(el.getAttribute("background"));
+    addFromSrcset(el.getAttribute("srcset"));
+    const style = el.getAttribute("style");
+    if (style) addFromCss(style);
+  }
+
+  // <style> blocks: the frame is same-origin, so the parsed rules are readable. A regex over
+  // the raw text is the fallback when a rule refuses to serialise.
+  try {
+    const walk = (rules: CSSRuleList) => {
+      for (const rule of rules) {
+        const nested = (rule as CSSGroupingRule).cssRules;
+        if (nested) walk(nested);
+        const style = (rule as CSSStyleRule).style;
+        if (!style) continue;
+        for (const prop of ["backgroundImage", "background", "listStyleImage", "borderImageSource", "content"] as const) {
+          const v = style[prop];
+          if (v) addFromCss(v);
+        }
+      }
+    };
+    for (const sheet of doc.styleSheets) walk(sheet.cssRules);
+  } catch {
+    for (const el of doc.querySelectorAll("style")) addFromCss(el.textContent ?? "");
+  }
+
+  return [...found];
 }
 
 interface MessageBodyProps {
@@ -202,8 +300,9 @@ body.hide-quotes .sm-cut,body.hide-quotes .sm-cut-after{display:none!important;}
 
 interface FrameMeta {
   hasQuotes: boolean;
-  hasRemote: boolean;
   hasSignature: boolean;
+  /** Remote URLs found in the rendered document, exactly as they appear in the HTML. */
+  remoteUrls: string[];
 }
 const SIGNATURE_SELECTOR = '.gmail_signature, [data-smartmail="gmail_signature"]';
 
@@ -293,6 +392,8 @@ function HtmlFrame({
   };
 
   const forwardRef = useRef(false);
+  const observerRef = useRef<ResizeObserver | null>(null);
+  useEffect(() => () => observerRef.current?.disconnect(), []);
   const handleLoad = () => {
     const doc = ref.current?.contentDocument;
     if (!doc?.body) return;
@@ -322,9 +423,19 @@ function HtmlFrame({
     measure();
     onMeta({
       hasQuotes: hasHistory,
-      hasRemote: /<img[^>]+src\s*=\s*["']?https?:/i.test(html),
       hasSignature: !!doc.querySelector(SIGNATURE_SELECTOR),
+      remoteUrls: collectRemoteUrls(doc),
     });
+    // measure() above runs before any image has decoded. Nothing used to load, so nobody
+    // noticed; the moment data: images render, a long email would clip. Watch the document and
+    // re-measure as content settles.
+    const view = doc.defaultView;
+    if (view?.ResizeObserver) {
+      observerRef.current?.disconnect();
+      const ro = new view.ResizeObserver(() => measure());
+      ro.observe(doc.documentElement);
+      observerRef.current = ro;
+    }
     doc.addEventListener("click", (e) => {
       const a = (e.target as Element | null)?.closest?.("a[href]") as HTMLAnchorElement | null;
       if (!a) return;
@@ -480,7 +591,7 @@ export function MessageBody({ email, risk, compact = false, onOpenLink }: Messag
   const [quotedOpen, setQuotedOpen] = useState(false);
   // Signatures are part of the message (Gmail shows them too); the toggle lets you hide one.
   const [signatureOpen, setSignatureOpen] = useState(true);
-  const [meta, setMeta] = useState<FrameMeta>({ hasQuotes: false, hasRemote: false, hasSignature: false });
+  const [meta, setMeta] = useState<FrameMeta>({ hasQuotes: false, hasSignature: false, remoteUrls: [] });
   const [attachments, setAttachments] = useState<AttachmentDto[]>([]);
   const [inlineImgs, setInlineImgs] = useState<InlineImageDto[]>([]);
   const [opening, setOpening] = useState<string | null>(null);
@@ -493,18 +604,34 @@ export function MessageBody({ email, risk, compact = false, onOpenLink }: Messag
   const [lightCard, setLightCard] = useState<boolean | null>(null);
   const useLight = lightCard ?? designed;
   const palette = appPalette.dark && useLight ? LIGHT_PALETTE : appPalette;
+  const [skippedInline, setSkippedInline] = useState<SkippedInlineImageDto[]>([]);
+  // Remote images are never loaded until the user asks. Gated on this state rather than on
+  // meta.remoteUrls, because rewriting the HTML reloads the frame and reports no URLs at all.
+  const [imagesState, setImagesState] = useState<"blocked" | "loading" | "shown" | "failed">("blocked");
+  const [remoteImgs, setRemoteImgs] = useState<RemoteImageDto[]>([]);
+  /**
+   * The remote URLs found in the message, held separately from `meta`. Substituting the images
+   * rewrites the srcdoc, which reloads the frame; that second pass sees only data: URIs and
+   * reports no remote URLs at all. Reading the list off `meta` would therefore make "Show
+   * pictures" a one-shot and leave "Try again" fetching nothing.
+   */
+  const [discoveredUrls, setDiscoveredUrls] = useState<string[]>([]);
 
   useEffect(() => {
     setLightCard(null);
     setMode(hasHtml ? "html" : "text");
     setQuotedOpen(false);
     setSignatureOpen(true);
-    setMeta({ hasQuotes: false, hasRemote: false, hasSignature: false });
+    setMeta({ hasQuotes: false, hasSignature: false, remoteUrls: [] });
     setPendingLink(null);
     setLinkError(null);
     setAttachments([]);
     setInlineImgs([]);
+    setSkippedInline([]);
     setAttachError(null);
+    setImagesState("blocked");
+    setRemoteImgs([]);
+    setDiscoveredUrls([]);
     let cancelled = false;
     api
       .listAttachments(email.id)
@@ -513,7 +640,14 @@ export function MessageBody({ email, risk, compact = false, onOpenLink }: Messag
         setAttachments(list);
         // Inline images are part of the message itself (fetched from Gmail, not a remote host).
         if (list.some((a) => a.content_id && a.mime_type.startsWith("image/")) && /cid:/i.test(email.body_html ?? "")) {
-          api.inlineImages(email.id).then((imgs) => !cancelled && setInlineImgs(imgs)).catch(() => {});
+          api
+            .inlineImages(email.id)
+            .then((res) => {
+              if (cancelled) return;
+              setInlineImgs(res.images);
+              setSkippedInline(res.skipped);
+            })
+            .catch(() => {});
         }
       })
       .catch(() => {});
@@ -522,8 +656,42 @@ export function MessageBody({ email, risk, compact = false, onOpenLink }: Messag
     };
   }, [email.id, hasHtml, email.body_html]);
 
-  const htmlWithImages = useMemo(() => inlineCidImages(email.body_html ?? "", inlineImgs), [email.body_html, inlineImgs]);
-  const files = attachments.filter((a) => !a.is_inline || !a.mime_type.startsWith("image/") || !a.content_id);
+  const htmlWithImages = useMemo(
+    () => inlineRemoteImages(inlineCidImages(email.body_html ?? "", inlineImgs), remoteImgs),
+    [email.body_html, inlineImgs, remoteImgs],
+  );
+  /** Fetches `urls`, merging over anything already loaded so a retry never drops a success. */
+  const loadImages = async (urls: string[]) => {
+    if (linksDisabled || !urls.length) return;
+    setImagesState("loading");
+    try {
+      const fetched = await api.fetchRemoteImages(email.id, urls);
+      const merged = new Map(remoteImgs.map((i) => [i.url, i]));
+      for (const img of fetched) merged.set(img.url, img);
+      const next = [...merged.values()];
+      setRemoteImgs(next);
+      setImagesState(next.some((i) => i.data_base64) ? "shown" : "failed");
+    } catch {
+      setImagesState("failed");
+    }
+  };
+  const failedImages = remoteImgs.filter((i) => !i.data_base64);
+  const handleMeta = (m: FrameMeta) => {
+    setMeta(m);
+    // Only ever grow the set: the post-substitution reload legitimately reports none.
+    if (m.remoteUrls.length) setDiscoveredUrls(m.remoteUrls);
+  };
+  const refs = useMemo(() => referencedCids(email.body_html ?? ""), [email.body_html]);
+  const shownCids = new Set(inlineImgs.map((i) => i.content_id));
+  // An inline image only earns its place in the body. If the HTML never references it, or it
+  // was too large to inline, or we are in plain-text view, it must still be reachable as a chip
+  // - otherwise it is invisible and un-openable, which is what the old filter did.
+  const files = attachments.filter((a) => {
+    if (!a.is_inline || !a.mime_type.startsWith("image/") || !a.content_id) return true;
+    if (mode === "text") return true;
+    if (!refs.has(a.content_id)) return true;
+    return !shownCids.has(a.content_id);
+  });
   const openAttachment = async (a: AttachmentDto) => {
     if (linksDisabled) return;
     setOpening(a.attachment_id);
@@ -589,9 +757,9 @@ export function MessageBody({ email, risk, compact = false, onOpenLink }: Messag
           </button>
         )}
         <span className="toolbar-notes">
-          {mode === "html" && meta.hasRemote && (
-            <span className="toolbar-note" title="Remote images (often tracking pixels) are never loaded">
-              Images blocked
+          {mode === "html" && imagesState === "shown" && (
+            <span className="toolbar-note" title="Fetched by the app, not by this message">
+              Pictures shown
             </span>
           )}
           {linksDisabled && <span className="toolbar-note is-danger">Links disabled</span>}
@@ -612,6 +780,38 @@ export function MessageBody({ email, risk, compact = false, onOpenLink }: Messag
       )}
       {linkError && <p className="inline-error">{linkError}</p>}
 
+      {mode === "html" && hasHtml && discoveredUrls.length > 0 && imagesState !== "shown" && (
+        <div className="images-banner sm-fade" aria-busy={imagesState === "loading"}>
+          {linksDisabled ? (
+            <>
+              <p className="images-banner-title">Pictures are not shown for this email.</p>
+              <p className="images-banner-note">It looks like a scam, so we are not asking the sender's server for anything.</p>
+            </>
+          ) : (
+            <>
+              <p className="images-banner-title">This email has pictures stored on the internet.</p>
+              <p className="images-banner-note">If you show them, the sender can tell that you opened this email.</p>
+              <button type="button" className="btn images-banner-btn" disabled={imagesState === "loading"} onClick={() => void loadImages(discoveredUrls)}>
+                {imagesState === "loading" ? "Getting pictures…" : imagesState === "failed" ? "Try again" : "Show pictures"}
+              </button>
+            </>
+          )}
+        </div>
+      )}
+      {imagesState === "shown" && failedImages.length > 0 && (
+        <p className="images-note sm-fade">
+          {failedImages.length} of {remoteImgs.length} pictures could not be shown.{" "}
+          <button
+            type="button"
+            className="link-btn"
+            onClick={() => void loadImages(failedImages.map((i) => i.url))}
+            title={failedImages.map((i) => i.error).join(" · ")}
+          >
+            Try again
+          </button>
+        </p>
+      )}
+
       {mode === "html" && hasHtml ? (
         <div className={`html-card ${palette.dark ? "html-card-dark" : "html-card-light"}`}>
           <HtmlFrame
@@ -621,7 +821,7 @@ export function MessageBody({ email, risk, compact = false, onOpenLink }: Messag
             hideQuotes={!quotedOpen}
             hideSignature={!signatureOpen}
             onLink={requestLink}
-            onMeta={setMeta}
+            onMeta={handleMeta}
           />
         </div>
       ) : (
@@ -643,6 +843,13 @@ export function MessageBody({ email, risk, compact = false, onOpenLink }: Messag
             {files.length} {files.length === 1 ? "attachment" : "attachments"}
             {linksDisabled ? " · opening disabled for this email" : ""}
           </span>
+          {skippedInline.length > 0 && (
+            <p className="images-note">
+              {skippedInline.length === 1
+                ? `One picture in this email was ${skippedInline[0].reason}. You can open it below.`
+                : `${skippedInline.length} pictures in this email could not be shown in the message. You can open them below.`}
+            </p>
+          )}
           <div className="attachment-chips">
             {files.map((a) => (
               <button

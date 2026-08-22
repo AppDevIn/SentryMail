@@ -157,6 +157,50 @@ const emails: EmailDto[] = [
     received_at: iso(60 * 24 * 4),
     is_read: true,
   },
+  {
+    // Remote images in four different places. The only <img> is a tracking pixel; the visible
+    // artwork is all CSS, so this only renders a banner if the stylesheet walker works.
+    id: 9,
+    account_id: 1,
+    gmail_thread_id: "t9",
+    thread_count: 1,
+    thread_unread: 1,
+    label_ids: ["INBOX"],
+    sender: "Northgate Studio <hello@studio.example>",
+    to_addrs: "jordan@northgate.io",
+    cc_addrs: "",
+    body_html:
+      '<style>.hero{background:url(https://cdn.example/css-bg.png) no-repeat;height:120px;display:block}</style>' +
+      '<div dir="ltr"><p>Our autumn collection is live.</p>' +
+      '<span class="hero"></span>' +
+      '<div style="background-image:url(https://cdn.example/band.png);height:60px"></div>' +
+      '<img srcset="https://cdn.example/a.png 1x, https://cdn.example/a2.png 2x" width="200">' +
+      '<table><tr><td background="https://cdn.example/tile.gif">Autumn</td></tr></table>' +
+      '<img src="https://track.example/open.gif?id=9" width="1" height="1">' +
+      '<p>See you soon,<br>The studio</p></div>',
+    subject: "Our autumn collection is live",
+    body_text: "Our autumn collection is live.\n\nSee you soon,\nThe studio",
+    received_at: iso(60 * 6),
+    is_read: false,
+  },
+  {
+    // Two inline images that must both surface as chips: one referenced but too large to
+    // inline, one never referenced by the HTML at all.
+    id: 10,
+    account_id: 1,
+    gmail_thread_id: "t10",
+    thread_count: 1,
+    thread_unread: 0,
+    label_ids: ["INBOX"],
+    sender: "Dana Ruiz <dana@northgate.io>",
+    to_addrs: "jordan@northgate.io",
+    cc_addrs: "",
+    body_html: '<div dir="ltr"><p>Photos from the site visit:</p><img src="cid:big1"><p>Dana</p></div>',
+    subject: "Photos from the site visit",
+    body_text: "Photos from the site visit:\n\n[image: family-photo.jpg]\n\nDana",
+    received_at: iso(60 * 9),
+    is_read: true,
+  },
 ];
 
 emails.push({
@@ -417,6 +461,13 @@ window.__TAURI_INTERNALS__ = {
           ];
         if (args.emailId === 1)
           return [{ id: 2, attachment_id: "att-2", filename: "logo.png", mime_type: "image/png", size: 68, content_id: "logo123", is_inline: true }];
+        if (args.emailId === 10)
+          return [
+            // Referenced by the HTML, but skipped for size - the chip is the only way to reach it.
+            { id: 7, attachment_id: "att-7", filename: "family-photo.jpg", mime_type: "image/jpeg", size: 8_400_000, content_id: "big1", is_inline: true },
+            // Marked inline with a cid the HTML never mentions: invisible under the old filter.
+            { id: 8, attachment_id: "att-8", filename: "site-plan.png", mime_type: "image/png", size: 1709, content_id: "orphan1", is_inline: true },
+          ];
         return [];
       case "open_attachment":
         await delay(400);
@@ -424,15 +475,25 @@ window.__TAURI_INTERNALS__ = {
         return "/tmp/mock";
       case "inline_images":
         if (args.emailId === 1)
-          return [
-            {
-              content_id: "logo123",
-              mime_type: "image/png",
-              data_base64:
-                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
-            },
-          ];
-        return [];
+          return {
+            images: [
+              {
+                content_id: "logo123",
+                mime_type: "image/png",
+                data_base64:
+                  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
+              },
+            ],
+            skipped: [],
+          };
+        if (args.emailId === 10)
+          return {
+            images: [],
+            skipped: [
+              { content_id: "big1", filename: "family-photo.jpg", size: 8_400_000, reason: "too large to show in the message" },
+            ],
+          };
+        return { images: [], skipped: [] };
       case "unsubscribe_info":
         return args.emailId === 5
           ? { method: { kind: "browser", url: "https://ciphergram.news/unsubscribe" }, unsubscribed_at: null }
@@ -539,6 +600,17 @@ window.__TAURI_INTERNALS__ = {
         return { accounts_synced: 1, new_emails: 0, errors: [] };
       // Calendar/meetings commands: the fixture set has no meetings, but list_meetings must
       // still return an array - App maps and filters over it on every render.
+      case "fetch_remote_images": {
+        // Long enough that the "Getting pictures…" state is screenshottable.
+        await delay(900);
+        const px =
+          "iVBORw0KGgoAAAANSUhEUgAAAGQAAABkCAIAAAD/gAIDAAAAWklEQVR42u3OMQEAAAgDoC251a3gLzSg2XTVDktLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS+u3tQ5QYAGtQBmUAAAAAElFTkSuQmCC";
+        return (args.urls as string[]).map((url) => {
+          if (url.includes("css-bg")) return { url, mime_type: null, data_base64: null, error: "the sender's server did not send the picture" };
+          if (url.includes("tile.gif")) return { url, mime_type: null, data_base64: null, error: "that picture is too large to show" };
+          return { url, mime_type: "image/png", data_base64: px };
+        });
+      }
       case "list_meetings":
         return [];
       case "scan_meetings":

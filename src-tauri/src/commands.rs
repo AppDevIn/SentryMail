@@ -1,5 +1,6 @@
 use crate::auth::{keyring_store, oauth};
 use crate::gmail::client::{extract_email_address, GmailClient};
+use crate::images::{self, RemoteImageDto};
 use crate::llm::{self, ModelStatus};
 use crate::meetings::{self, MeetingDto};
 use crate::search;
@@ -551,43 +552,148 @@ pub struct InlineImageDto {
     pub data_base64: String,
 }
 
+/// One inline image we deliberately did not fetch, so the UI can explain the gap instead of
+/// leaving a broken image with no reason.
+#[derive(Debug, Serialize, PartialEq)]
+pub struct SkippedInlineImageDto {
+    pub content_id: String,
+    pub filename: String,
+    pub size: i64,
+    /// Plain language, rendered to the user as-is.
+    pub reason: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct InlineImagesDto {
+    pub images: Vec<InlineImageDto>,
+    pub skipped: Vec<SkippedInlineImageDto>,
+}
+
+/// One inline image part as recorded at sync time.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InlinePart {
+    pub attachment_id: String,
+    pub mime_type: String,
+    pub content_id: String,
+    pub filename: String,
+    pub size: i64,
+}
+
+const MAX_INLINE_IMAGE_BYTES: i64 = 5 * 1024 * 1024;
+const MAX_INLINE_TOTAL_BYTES: i64 = 12 * 1024 * 1024;
+
+pub const REASON_TOO_LARGE: &str = "too large to show in the message";
+pub const REASON_TOO_MANY: &str = "this message has too many pictures to show them all";
+pub const REASON_FAILED: &str = "could not be downloaded";
+
+fn skipped(part: &InlinePart, reason: &str) -> SkippedInlineImageDto {
+    SkippedInlineImageDto {
+        content_id: part.content_id.clone(),
+        filename: part.filename.clone(),
+        size: part.size,
+        reason: reason.to_string(),
+    }
+}
+
+/// Splits inline parts into "fetch these" and "skip these, with a reason".
+///
+/// Two rules, and the ordering between them matters: an individual part over `per_image` is
+/// skipped on its own while later parts still load, but once the running total crosses `total`
+/// we stop outright - that part and *every* part after it are skipped. Carrying on past the
+/// budget (skipping only the parts that happen not to fit) is what made oversized images vanish
+/// with no explanation.
+fn plan_inline_fetch(parts: &[InlinePart], per_image: i64, total: i64) -> (Vec<InlinePart>, Vec<SkippedInlineImageDto>) {
+    let mut fetch = Vec::new();
+    let mut skip = Vec::new();
+    let mut running: i64 = 0;
+    let mut stopped = false;
+    for part in parts {
+        if stopped {
+            skip.push(skipped(part, REASON_TOO_MANY));
+            continue;
+        }
+        if part.size > per_image {
+            skip.push(skipped(part, REASON_TOO_LARGE));
+            continue;
+        }
+        if running + part.size > total {
+            stopped = true;
+            skip.push(skipped(part, REASON_TOO_MANY));
+            continue;
+        }
+        running += part.size;
+        fetch.push(part.clone());
+    }
+    (fetch, skip)
+}
+
 /// Inline (cid:) images of a message as data URIs, so the sandboxed HTML can show them
-/// without any remote load. Capped at ~6 MB total.
+/// without any remote load. Anything not fetched comes back in `skipped` with a reason.
 #[tauri::command]
-pub async fn inline_images(app: AppHandle, state: State<'_, AppState>, email_id: i64) -> Result<Vec<InlineImageDto>, String> {
+pub async fn inline_images(app: AppHandle, state: State<'_, AppState>, email_id: i64) -> Result<InlineImagesDto, String> {
     use base64::Engine as _;
-    let parts: Vec<(String, String, String, i64)> = {
+    let parts: Vec<InlinePart> = {
         let db = state.db.lock().map_err(|e| e.to_string())?;
         let mut stmt = db
             .prepare(
-                "SELECT attachment_id, mime_type, content_id, size FROM attachments
+                "SELECT attachment_id, mime_type, content_id, filename, size FROM attachments
                  WHERE email_id = ?1 AND content_id IS NOT NULL AND mime_type LIKE 'image/%'",
             )
             .map_err(|e| e.to_string())?;
         let rows = stmt
-            .query_map(params![email_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))
+            .query_map(params![email_id], |row| {
+                Ok(InlinePart {
+                    attachment_id: row.get(0)?,
+                    mime_type: row.get(1)?,
+                    content_id: row.get(2)?,
+                    filename: row.get(3)?,
+                    size: row.get(4)?,
+                })
+            })
             .map_err(|e| e.to_string())?;
         rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?
     };
     if parts.is_empty() {
-        return Ok(Vec::new());
+        return Ok(InlineImagesDto { images: Vec::new(), skipped: Vec::new() });
+    }
+    let (to_fetch, mut skipped_out) = plan_inline_fetch(&parts, MAX_INLINE_IMAGE_BYTES, MAX_INLINE_TOTAL_BYTES);
+    if to_fetch.is_empty() {
+        return Ok(InlineImagesDto { images: Vec::new(), skipped: skipped_out });
     }
     let (client, gmail_message_id) = gmail_client_for_email(&app, &state, email_id).await?;
     let mut out = Vec::new();
-    let mut budget: i64 = 6 * 1024 * 1024;
-    for (attachment_id, mime_type, content_id, size) in parts {
-        if size > budget {
+    let mut actual: i64 = 0;
+    let mut stopped = false;
+    for part in &to_fetch {
+        // Past the budget everything after stops too, matching plan_inline_fetch's rule -
+        // skipping only the parts that happen not to fit is what made the gaps look arbitrary.
+        if stopped {
+            skipped_out.push(skipped(part, REASON_TOO_MANY));
             continue;
         }
-        let bytes = client.get_attachment(&gmail_message_id, &attachment_id).await?;
-        budget -= bytes.len() as i64;
+        // One bad part must not take the whole message's images down with it.
+        let bytes = match client.get_attachment(&gmail_message_id, &part.attachment_id).await {
+            Ok(b) => b,
+            Err(_) => {
+                skipped_out.push(skipped(part, REASON_FAILED));
+                continue;
+            }
+        };
+        // Gmail's recorded size can drift from what actually arrives, so re-check against the
+        // real bytes rather than trusting the plan alone.
+        if actual + bytes.len() as i64 > MAX_INLINE_TOTAL_BYTES {
+            stopped = true;
+            skipped_out.push(skipped(part, REASON_TOO_MANY));
+            continue;
+        }
+        actual += bytes.len() as i64;
         out.push(InlineImageDto {
-            content_id,
-            mime_type,
+            content_id: part.content_id.clone(),
+            mime_type: part.mime_type.clone(),
             data_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
         });
     }
-    Ok(out)
+    Ok(InlineImagesDto { images: out, skipped: skipped_out })
 }
 
 /// `upsert_message` with exponential backoff on Gmail rate-limit / transient server errors.
@@ -2358,4 +2464,86 @@ pub fn list_meetings(
 #[tauri::command]
 pub fn dismiss_meeting(state: State<'_, AppState>, meeting_id: i64) -> Result<(), String> {
     meetings::dismiss_meeting(&state.db, meeting_id)
+}
+
+/// Fetches this message's remote images so the sandboxed frame can show them as data URIs,
+/// without the frame itself ever making a network request. Only ever called after the user
+/// explicitly asks for the pictures - never during sync, and never automatically.
+///
+/// `email_id` is unused today but scopes the command to a message, and is where a future
+/// "always show pictures from this sender" check would live.
+#[tauri::command]
+pub async fn fetch_remote_images(_email_id: i64, urls: Vec<String>) -> Result<Vec<RemoteImageDto>, String> {
+    images::fetch_remote_images(urls).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn part(cid: &str, size: i64) -> InlinePart {
+        InlinePart {
+            attachment_id: format!("a-{cid}"),
+            mime_type: "image/png".to_string(),
+            content_id: cid.to_string(),
+            filename: format!("{cid}.png"),
+            size,
+        }
+    }
+
+    #[test]
+    fn oversize_part_is_skipped_but_later_small_parts_still_load() {
+        let parts = vec![part("big", 9_000), part("small", 100)];
+        let (fetch, skip) = plan_inline_fetch(&parts, 1_000, 100_000);
+        assert_eq!(fetch, vec![part("small", 100)]);
+        assert_eq!(skip.len(), 1);
+        assert_eq!(skip[0].content_id, "big");
+        assert_eq!(skip[0].reason, REASON_TOO_LARGE);
+    }
+
+    #[test]
+    fn crossing_the_total_stops_everything_after_it() {
+        // The old bug: a part that did not fit was skipped and the loop carried on, so a later
+        // small part would still load and the gap looked arbitrary. Once the budget is gone it
+        // must stay gone.
+        let parts = vec![part("a", 600), part("b", 600), part("c", 10)];
+        let (fetch, skip) = plan_inline_fetch(&parts, 10_000, 1_000);
+        assert_eq!(fetch, vec![part("a", 600)]);
+        assert_eq!(skip.len(), 2);
+        assert_eq!(skip[0].content_id, "b");
+        assert_eq!(skip[1].content_id, "c");
+        assert!(skip.iter().all(|s| s.reason == REASON_TOO_MANY));
+    }
+
+    #[test]
+    fn a_part_landing_exactly_on_the_total_still_fits() {
+        let parts = vec![part("a", 500), part("b", 500)];
+        let (fetch, skip) = plan_inline_fetch(&parts, 10_000, 1_000);
+        assert_eq!(fetch.len(), 2);
+        assert!(skip.is_empty());
+    }
+
+    #[test]
+    fn one_byte_over_the_total_does_not_fit() {
+        let parts = vec![part("a", 500), part("b", 501)];
+        let (fetch, skip) = plan_inline_fetch(&parts, 10_000, 1_000);
+        assert_eq!(fetch.len(), 1);
+        assert_eq!(skip.len(), 1);
+        assert_eq!(skip[0].content_id, "b");
+    }
+
+    #[test]
+    fn a_part_exactly_on_the_per_image_cap_is_kept() {
+        let parts = vec![part("a", 1_000)];
+        let (fetch, skip) = plan_inline_fetch(&parts, 1_000, 10_000);
+        assert_eq!(fetch.len(), 1);
+        assert!(skip.is_empty());
+    }
+
+    #[test]
+    fn no_parts_means_no_work() {
+        let (fetch, skip) = plan_inline_fetch(&[], 1_000, 10_000);
+        assert!(fetch.is_empty());
+        assert!(skip.is_empty());
+    }
 }
