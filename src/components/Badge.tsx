@@ -1,14 +1,14 @@
 import type { Priority, Risk, TriageType } from "../types";
 import { PRIORITY_LABELS, RISK_LABELS, TYPE_LABELS } from "../format";
 
-/** Mono, uppercase pill: machine-produced metadata per the design rule (mono = model output). */
+/** Rounded risk pill (sentence case, sans). */
 export function RiskPill({ risk, size = "sm" }: { risk: Risk; size?: "sm" | "md" }) {
   return (
     <span className={`pill pill-risk-${risk} pill-${size}`}>
       <span className="pill-glyph" aria-hidden="true">
         {risk === "safe" ? "✓" : "!"}
       </span>
-      {RISK_LABELS[risk].toUpperCase()}
+      {RISK_LABELS[risk]}
     </span>
   );
 }

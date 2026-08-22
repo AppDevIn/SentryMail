@@ -100,23 +100,23 @@ export function ThreadHistory({
   return (
     <div className="thread">
       <div className="thread-head">
-        <span className="mono thread-title">
-          EARLIER IN THIS THREAD · {items.length} OF {items.length + 1} MESSAGES
+        <span className="thread-title">
+          Earlier in this thread · {items.length} of {items.length + 1} messages
         </span>
         {hidden > 0 && (
-          <button type="button" className="mono toolbar-btn" onClick={() => setShowAll(true)}>
-            SHOW ALL {items.length}
+          <button type="button" className="toolbar-btn" onClick={() => setShowAll(true)}>
+            Show all {items.length}
           </button>
         )}
         {showAll && items.length > THREAD_PREVIEW_COUNT && (
-          <button type="button" className="mono toolbar-btn" onClick={() => setShowAll(false)}>
-            SHOW LATEST {THREAD_PREVIEW_COUNT}
+          <button type="button" className="toolbar-btn" onClick={() => setShowAll(false)}>
+            Show latest {THREAD_PREVIEW_COUNT}
           </button>
         )}
         {summarize && pending.length > 0 && summarizing === null && (!autoSummarize || summaryError || !modelReady) && (
           <button
             type="button"
-            className="mono toolbar-btn is-accent"
+            className="toolbar-btn is-accent"
             disabled={!modelReady}
             title={modelReady ? "One-line on-device summary of each visible message" : "Load the triage model to get AI summaries"}
             onClick={() => {
@@ -124,10 +124,10 @@ export function ThreadHistory({
               void runSummaries();
             }}
           >
-            {summaryError ? "RETRY SUMMARIES" : "SUMMARIZE"}
+            {summaryError ? "Retry summaries" : "Summarize"}
           </button>
         )}
-        {summarizing !== null && <span className="mono toolbar-btn sm-pulse">SUMMARIZING…</span>}
+        {summarizing !== null && <span className="toolbar-btn sm-pulse">Summarizing…</span>}
         {summaryError && <span className="inline-error">{summaryError}</span>}
       </div>
       <ul className="thread-list">
@@ -150,10 +150,10 @@ export function ThreadHistory({
                 }
               >
                 <span className="thread-sender">{isYou ? "You" : it.sender}</span>
-                {it.dateLabel && <span className="mono thread-date">{it.dateLabel}</span>}
+                {it.dateLabel && <span className="thread-date">{it.dateLabel}</span>}
                 {it.source === "quoted" && (
-                  <span className="mono thread-source" title="Reconstructed from the quoted text (not synced as its own message)">
-                    FROM QUOTE
+                  <span className="thread-source" title="Reconstructed from the quoted text (not synced as its own message)">
+                    From quote
                   </span>
                 )}
                 <span className="thread-plus" aria-hidden="true">
@@ -165,7 +165,7 @@ export function ThreadHistory({
               ) : summaries[it.key] ? (
                 <p className="thread-preview thread-preview-ai">{summaries[it.key]}</p>
               ) : summarizing === it.key ? (
-                <p className="thread-preview mono sm-pulse">SUMMARIZING…</p>
+                <p className="thread-preview thread-preview-muted sm-pulse">Summarizing…</p>
               ) : (
                 <p className="thread-preview">{it.preview || "(no text)"}</p>
               )}

@@ -51,12 +51,147 @@ function sanitizeHtml(html: string): string {
 const FRAME_CSP =
   "default-src 'none'; style-src 'unsafe-inline'; img-src data: cid:; font-src 'none'; connect-src 'none'; frame-src 'none'; form-action 'none'";
 
-function buildSrcdoc(html: string): string {
-  return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${FRAME_CSP}"><style>
-html,body{margin:0;padding:0;background:#ffffff;color:#111418;}
-body{display:flow-root;padding:18px 20px;font:14px/1.55 -apple-system,"Helvetica Neue",Helvetica,Arial,sans-serif;word-break:break-word;overflow-wrap:anywhere;}
+/** Colors the sandboxed frame inherits from the app theme so the card doesn't fracture the page. */
+export interface FramePalette {
+  dark: boolean;
+  bg: string;
+  text: string;
+  link: string;
+}
+
+const LIGHT_PALETTE: FramePalette = { dark: false, bg: "#ffffff", text: "#111418", link: "#0b57d0" };
+
+/** Reads the live app palette off :root so the frame matches light/dark exactly. */
+function readPalette(): FramePalette {
+  const cs = getComputedStyle(document.documentElement);
+  const get = (v: string, fb: string) => cs.getPropertyValue(v).trim() || fb;
+  const dark = get("color-scheme", "dark") === "dark";
+  if (!dark) return LIGHT_PALETTE;
+  return { dark: true, bg: get("--surface", "#181b20"), text: get("--text", "#e6edf3"), link: get("--accent-strong", "#60a5fa") };
+}
+
+/** Re-reads the palette whenever the theme attribute/class on <html> or the OS scheme changes. */
+function usePalette(): FramePalette {
+  const [pal, setPal] = useState<FramePalette>(() => readPalette());
+  useEffect(() => {
+    const update = () => setPal(readPalette());
+    const mo = new MutationObserver(update);
+    mo.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme", "class"] });
+    const mq = window.matchMedia("(prefers-color-scheme: light)");
+    mq.addEventListener("change", update);
+    return () => {
+      mo.disconnect();
+      mq.removeEventListener("change", update);
+    };
+  }, []);
+  return pal;
+}
+
+/** Where reply/forward history starts: Gmail/Yahoo/Proton/Thunderbird classes, Outlook's From: block. */
+const HISTORY_START_RE =
+  /class="[^"]*\b(gmail_quote|yahoo_quoted|protonmail_quote|moz-cite-prefix)\b|id="(divRplyFwdMsg|appendonsend)"|<blockquote[^>]+type="cite"|<b>\s*From:\s*<\/b>|border-top:\s*solid\s+#e1e1e1|-{3,}\s*Original Message\s*-{3,}/i;
+
+const WHITE_RE = /^(#fff(?:fff)?\b|white\b|rgba?\(\s*255\s*,\s*255\s*,\s*255)/i;
+
+/**
+ * Designed (marketing) mail paints its own canvas: a background on a structural element
+ * (table/cell/body/center) that isn't plain white. Coloured spans, signature badges, and a
+ * `background:white` wrapper are prose and stay on the app theme, where the dark fix-up
+ * keeps them readable. Only the visible part counts - collapsed history says nothing
+ * about how this message was designed.
+ */
+export function paintsOwnCanvas(html: string): boolean {
+  const cut = html.search(HISTORY_START_RE);
+  const visible = cut >= 0 ? html.slice(0, cut) : html;
+  for (const m of visible.matchAll(/<(?:table|td|th|body|center)\b[^>]*?(?:\bbgcolor\s*=\s*["']?([^"'\s>]+)|background(?:-color)?\s*:\s*([^;"']+))/gi)) {
+    const v = (m[1] ?? m[2] ?? "").trim();
+    if (!v || /^(transparent|none|inherit|initial|unset)\b/i.test(v) || WHITE_RE.test(v)) continue;
+    return true;
+  }
+  return false;
+}
+
+function parseRgb(v: string): [number, number, number, number] | null {
+  const m = v.match(/rgba?\(\s*(\d+)[\s,]+(\d+)[\s,]+(\d+)(?:[\s,/]+([\d.]+))?\s*\)/i);
+  if (!m) return null;
+  return [+m[1], +m[2], +m[3], m[4] === undefined ? 1 : +m[4]];
+}
+
+function luminance([r, g, b]: [number, number, number, number]): number {
+  const f = (c: number) => {
+    const x = c / 255;
+    return x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4;
+  };
+  return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b);
+}
+
+/** Lifts a dark colour into the readable range while keeping its hue (greys go to the app text colour). */
+function lighten([r, g, b]: [number, number, number, number], fallback: string): string {
+  const max = Math.max(r, g, b) / 255;
+  const min = Math.min(r, g, b) / 255;
+  const l = (max + min) / 2;
+  const d = max - min;
+  if (d < 0.08) return fallback;
+  const sat = d / (1 - Math.abs(2 * l - 1));
+  let h = 0;
+  const rr = r / 255,
+    gg = g / 255,
+    bb = b / 255;
+  if (max === rr) h = ((gg - bb) / d) % 6;
+  else if (max === gg) h = (bb - rr) / d + 2;
+  else h = (rr - gg) / d + 4;
+  h = Math.round(h * 60);
+  if (h < 0) h += 360;
+  return `hsl(${h} ${Math.round(Math.min(sat, 0.9) * 100)}% 74%)`;
+}
+
+/**
+ * Dark-theme fix-up for mail that hard-codes dark text (Outlook forward headers use
+ * `<font color="#000000">`, signatures use `color:#333`): text sitting directly on the
+ * frame's dark surface is lifted to a readable colour; text inside a block that paints its
+ * own background is left alone, since that block still looks the way its author intended.
+ */
+function adaptDarkText(doc: Document, pal: FramePalette) {
+  const win = doc.defaultView;
+  if (!win) return;
+  const hasOwnBg = new WeakMap<Element, boolean>();
+  const paintsBg = (el: Element): boolean => {
+    const cached = hasOwnBg.get(el);
+    if (cached !== undefined) return cached;
+    const cs = win.getComputedStyle(el);
+    let bg = parseRgb(cs.backgroundColor);
+    if (bg && bg[3] > 0.05 && luminance(bg) > 0.93 && cs.backgroundImage === "none") {
+      // White/near-white is the author's "paper", not a design choice: drop it onto the theme.
+      (el as HTMLElement).style.setProperty("background-color", "transparent", "important");
+      bg = null;
+    }
+    const own = (bg !== null && bg[3] > 0.05) || cs.backgroundImage !== "none";
+    // The frame's own body/html surface doesn't count: that's the app theme, not the author's design.
+    const parent = el.parentElement;
+    const result = own || (parent && parent !== doc.body && parent !== doc.documentElement ? paintsBg(parent) : false);
+    hasOwnBg.set(el, result);
+    return result;
+  };
+  for (const el of doc.body.querySelectorAll<HTMLElement>("*")) {
+    if (el.childNodes.length === 0) continue;
+    const cs = win.getComputedStyle(el);
+    const rgb = parseRgb(cs.color);
+    if (!rgb || luminance(rgb) > 0.35) continue;
+    if (paintsBg(el)) continue;
+    el.style.setProperty("color", lighten(rgb, pal.text), "important");
+  }
+  // Outlook/Word forward rules are drawn in currentColor; make sure they stay visible too.
+  for (const hr of doc.body.querySelectorAll<HTMLElement>("hr")) {
+    if (!paintsBg(hr)) hr.style.setProperty("border-color", "rgba(148,163,184,0.35)", "important");
+  }
+}
+
+function buildSrcdoc(html: string, pal: FramePalette): string {
+  return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${FRAME_CSP}"><meta name="color-scheme" content="${pal.dark ? "dark" : "light"}"><style>
+html,body{margin:0;padding:0;background:${pal.bg};color:${pal.text};}
+body{display:flow-root;padding:20px 22px;font:14.5px/1.65 "IBM Plex Sans",-apple-system,"Helvetica Neue",Helvetica,Arial,sans-serif;word-break:break-word;overflow-wrap:anywhere;}
 img{max-width:100%;height:auto;}
-a{color:#0b57d0;}
+a{color:${pal.link};}
 pre{white-space:pre-wrap;}
 table{max-width:100%;}
 body.hide-quotes:not(.is-forward) .gmail_quote,body.hide-quotes:not(.is-forward) blockquote[type="cite"],body.hide-quotes:not(.is-forward) .yahoo_quoted,body.hide-quotes:not(.is-forward) #divRplyFwdMsg,body.hide-quotes:not(.is-forward) #divRplyFwdMsg ~ *,body.hide-quotes:not(.is-forward) .moz-cite-prefix,body.hide-quotes:not(.is-forward) .moz-cite-prefix ~ blockquote,body.hide-quotes:not(.is-forward) .protonmail_quote{display:none!important;}
@@ -127,6 +262,7 @@ function isForwardBlock(el: Element): boolean {
 function HtmlFrame({
   html,
   subject,
+  palette,
   hideQuotes,
   hideSignature,
   onLink,
@@ -134,6 +270,7 @@ function HtmlFrame({
 }: {
   html: string;
   subject: string;
+  palette: FramePalette;
   hideQuotes: boolean;
   hideSignature: boolean;
   onLink: (url: string) => void;
@@ -143,7 +280,7 @@ function HtmlFrame({
   const [height, setHeight] = useState(160);
   const onLinkRef = useRef(onLink);
   onLinkRef.current = onLink;
-  const srcdoc = useMemo(() => buildSrcdoc(html), [html]);
+  const srcdoc = useMemo(() => buildSrcdoc(html, palette), [html, palette]);
 
   const measure = () => {
     const doc = ref.current?.contentDocument;
@@ -181,6 +318,7 @@ function HtmlFrame({
     }
     doc.body.classList.toggle("hide-quotes", hideQuotes);
     doc.body.classList.toggle("hide-sig", hideSignature);
+    if (palette.dark) adaptDarkText(doc, palette);
     measure();
     onMeta({
       hasQuotes: hasHistory,
@@ -349,8 +487,15 @@ export function MessageBody({ email, risk, compact = false, onOpenLink }: Messag
   const [attachError, setAttachError] = useState<string | null>(null);
   const [pendingLink, setPendingLink] = useState<string | null>(null);
   const [linkError, setLinkError] = useState<string | null>(null);
+  const appPalette = usePalette();
+  const designed = useMemo(() => hasHtml && paintsOwnCanvas(email.body_html ?? ""), [hasHtml, email.body_html]);
+  // Designed mail defaults to a light card; the user can flip either way per message.
+  const [lightCard, setLightCard] = useState<boolean | null>(null);
+  const useLight = lightCard ?? designed;
+  const palette = appPalette.dark && useLight ? LIGHT_PALETTE : appPalette;
 
   useEffect(() => {
+    setLightCard(null);
     setMode(hasHtml ? "html" : "text");
     setQuotedOpen(false);
     setSignatureOpen(true);
@@ -418,46 +563,61 @@ export function MessageBody({ email, risk, compact = false, onOpenLink }: Messag
     <section className={`message ${compact ? "message-compact" : ""}`}>
       <div className="message-toolbar">
         {hasHtml && (
-          <button type="button" className="mono toolbar-btn" onClick={() => setMode((m) => (m === "html" ? "text" : "html"))}>
-            {mode === "html" ? "VIEW PLAIN TEXT" : "VIEW FORMATTED"}
+          <button type="button" className="toolbar-btn" onClick={() => setMode((m) => (m === "html" ? "text" : "html"))}>
+            {mode === "html" ? "View plain text" : "View formatted"}
+          </button>
+        )}
+        {hasHtml && mode === "html" && appPalette.dark && (
+          <button
+            type="button"
+            className="toolbar-btn"
+            title={useLight ? "Render this message on the app's dark surface" : "Render this message on a light card"}
+            onClick={() => setLightCard(!useLight)}
+          >
+            {useLight ? "Match dark theme" : "Light background"}
           </button>
         )}
         {showQuoteToggle && (
-          <button type="button" className="mono toolbar-btn" aria-expanded={quotedOpen} onClick={() => setQuotedOpen((o) => !o)}>
-            {quotedOpen ? "HIDE" : "SHOW"} QUOTED HISTORY
-            {mode === "text" && quoted ? ` · ${quoted.split("\n").length} LINES` : ""}
+          <button type="button" className="toolbar-btn" aria-expanded={quotedOpen} onClick={() => setQuotedOpen((o) => !o)}>
+            {quotedOpen ? "Hide" : "Show"} quoted history
+            {mode === "text" && quoted ? ` · ${quoted.split("\n").length} lines` : ""}
           </button>
         )}
         {showSignatureToggle && (
-          <button type="button" className="mono toolbar-btn" aria-expanded={signatureOpen} onClick={() => setSignatureOpen((o) => !o)}>
-            {signatureOpen ? "HIDE" : "SHOW"} SIGNATURE
+          <button type="button" className="toolbar-btn" aria-expanded={signatureOpen} onClick={() => setSignatureOpen((o) => !o)}>
+            {signatureOpen ? "Hide" : "Show"} signature
           </button>
         )}
-        <span className="toolbar-notes mono">
-          {mode === "html" && meta.hasRemote && <span title="Remote images (often tracking pixels) are never loaded">IMAGES BLOCKED</span>}
-          {linksDisabled && <span className="is-danger">LINKS DISABLED</span>}
+        <span className="toolbar-notes">
+          {mode === "html" && meta.hasRemote && (
+            <span className="toolbar-note" title="Remote images (often tracking pixels) are never loaded">
+              Images blocked
+            </span>
+          )}
+          {linksDisabled && <span className="toolbar-note is-danger">Links disabled</span>}
         </span>
       </div>
 
       {pendingLink && (
         <div className="link-confirm sm-fade" role="dialog" aria-label="Open link">
-          <span className="mono link-confirm-label">OPEN IN BROWSER?</span>
+          <span className="link-confirm-label">Open in browser?</span>
           <span className="link-url">{pendingLink}</span>
-          <button type="button" className="btn btn-mini mono" onClick={() => open(pendingLink)}>
-            OPEN
+          <button type="button" className="btn btn-mini" onClick={() => open(pendingLink)}>
+            Open
           </button>
-          <button type="button" className="btn btn-mini mono" onClick={() => setPendingLink(null)}>
-            CANCEL
+          <button type="button" className="btn btn-mini" onClick={() => setPendingLink(null)}>
+            Cancel
           </button>
         </div>
       )}
       {linkError && <p className="inline-error">{linkError}</p>}
 
       {mode === "html" && hasHtml ? (
-        <div className="html-card">
+        <div className={`html-card ${palette.dark ? "html-card-dark" : "html-card-light"}`}>
           <HtmlFrame
             html={htmlWithImages}
             subject={email.subject}
+            palette={palette}
             hideQuotes={!quotedOpen}
             hideSignature={!signatureOpen}
             onLink={requestLink}
@@ -465,21 +625,23 @@ export function MessageBody({ email, risk, compact = false, onOpenLink }: Messag
           />
         </div>
       ) : (
-        <PlainText
-          text={newest}
-          quoted={quoted}
-          quotedOpen={quotedOpen}
-          signatureOpen={signatureOpen}
-          onLink={requestLink}
-          linksDisabled={linksDisabled}
-        />
+        <div className={compact ? undefined : "html-card text-card"}>
+          <PlainText
+            text={newest}
+            quoted={quoted}
+            quotedOpen={quotedOpen}
+            signatureOpen={signatureOpen}
+            onLink={requestLink}
+            linksDisabled={linksDisabled}
+          />
+        </div>
       )}
 
       {files.length > 0 && (
         <div className="attachments">
-          <span className="mono attachments-label">
-            {files.length} {files.length === 1 ? "ATTACHMENT" : "ATTACHMENTS"}
-            {linksDisabled ? " · OPENING DISABLED FOR THIS EMAIL" : ""}
+          <span className="attachments-label">
+            {files.length} {files.length === 1 ? "attachment" : "attachments"}
+            {linksDisabled ? " · opening disabled for this email" : ""}
           </span>
           <div className="attachment-chips">
             {files.map((a) => (
@@ -492,7 +654,7 @@ export function MessageBody({ email, risk, compact = false, onOpenLink }: Messag
                 onClick={() => void openAttachment(a)}
               >
                 <span className="attachment-name">{a.filename}</span>
-                <span className="mono attachment-size">{opening === a.attachment_id ? "OPENING…" : formatSize(a.size)}</span>
+                <span className="attachment-size">{opening === a.attachment_id ? "Opening…" : formatSize(a.size)}</span>
               </button>
             ))}
           </div>

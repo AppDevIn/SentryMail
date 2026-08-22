@@ -37,35 +37,35 @@ export const RISK_NOTES: Record<Risk, string | null> = {
  */
 export const SIGNAL_INFO: Record<string, { label: string; description: string }> = {
   urgency_pressure: {
-    label: "URGENCY PRESSURE",
+    label: "Urgency pressure",
     description: "Pushes you to act right now, before you have time to think or check.",
   },
   money_request: {
-    label: "MONEY REQUEST",
+    label: "Money request",
     description: "Asks for a payment, transfer, gift cards, or crypto.",
   },
   credential_request: {
-    label: "CREDENTIAL REQUEST",
+    label: "Credential request",
     description: "Asks for a password, one-time code, bank details, or remote access.",
   },
   sender_mismatch: {
-    label: "SENDER MISMATCH",
+    label: "Sender mismatch",
     description: "The display name doesn't match the real address, or the domain looks like a copycat.",
   },
   suspicious_links: {
-    label: "SUSPICIOUS LINKS",
+    label: "Suspicious links",
     description: "Contains unexpected, shortened, or disguised links or attachments.",
   },
   emotional_manipulation: {
-    label: "EMOTIONAL MANIPULATION",
+    label: "Emotional manipulation",
     description: "Leans on fear, a prize, a family emergency, or claimed authority to pressure you.",
   },
   secrecy_request: {
-    label: "SECRECY REQUEST",
+    label: "Secrecy request",
     description: "Asks you to keep this private or not tell anyone.",
   },
   inconsistent_formatting: {
-    label: "INCONSISTENT FORMATTING",
+    label: "Inconsistent formatting",
     description: "Grammar, tone, or layout doesn't fit who the sender claims to be.",
   },
 };
@@ -86,7 +86,8 @@ export function parseSignals(signalsJson: string): string[] {
 }
 
 export function signalLabel(signal: string): string {
-  return SIGNAL_INFO[signal]?.label ?? signal.replace(/_/g, " ").toUpperCase();
+  const raw = signal.replace(/_/g, " ");
+  return SIGNAL_INFO[signal]?.label ?? raw.charAt(0).toUpperCase() + raw.slice(1);
 }
 
 /** Splits a raw RFC 5322 sender ("Name <addr>", "addr", "'Name' via List <addr>") into parts. */
