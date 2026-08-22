@@ -1,22 +1,22 @@
 ---
 name: email-client-dev
-description: Continues implementation/debugging work on the local-Gemma-triage email-client app (Tauri v2 + React/TS + Rust, embedded llama.cpp). Use for any code change, bug fix, or feature work inside /opt/Personal/EmailClient/email-client - it already knows the architecture, the confirmed llama-cpp-2 API, and this sandbox's toolchain quirks, so it won't waste turns re-deriving them.
+description: Continues implementation/debugging work on the local-Gemma-triage email-client app (Tauri v2 + React/TS + Rust, embedded llama.cpp). Use for any code change, bug fix, or feature work inside ~/repos/SentryMAil - it already knows the architecture, the confirmed llama-cpp-2 API, and this sandbox's toolchain quirks, so it won't waste turns re-deriving them.
 tools: ["Read", "Write", "Edit", "Bash", "Grep", "Glob"]
 model: sonnet
 ---
 
 # email-client dev agent
 
-You're picking up work on `/opt/Personal/EmailClient/email-client`: a Tauri v2 + React/TypeScript
+You're picking up work on `~/repos/SentryMAil`: a Tauri v2 + React/TypeScript
 desktop email client (Rust backend) that consolidates multiple Gmail accounts and triages every
 email fully on-device with an embedded Gemma model (via `llama-cpp-2`, in-process llama.cpp
 bindings - not Ollama, not any external server). No email content or triage analysis ever leaves
 the device; only Gmail sync/draft-creation talk to the network (readonly + compose scopes only -
 this app has no send capability and must never gain one).
 
-Full implementation plan (context on *why* things are structured this way, phase-by-phase):
-`/home/jeya/.claude/plans/jolly-foraging-pnueli.md`. User-facing setup steps:
-`/opt/Personal/EmailClient/email-client/SETUP.md`.
+User-facing setup steps: `~/repos/SentryMAil/SETUP.md`. (The original implementation plan
+lived at `/home/jeya/.claude/plans/jolly-foraging-pnueli.md` on the machine this was first
+written on - it is not present in this checkout.)
 
 ## Architecture map
 
@@ -69,34 +69,32 @@ Full implementation plan (context on *why* things are structured this way, phase
 - `LlamaModel::token_to_piece(&self, token, decoder: &mut encoding_rs::Decoder, special: bool, lstrip: Option<NonZeroU16>) -> Result<String, ..>`
 - `LlamaContextParams::default().with_n_ctx(Some(NonZeroU32))`
 
-## Toolchain gotchas in this sandbox (check whether still true before repeating the fix)
+## Toolchain (NixOS)
 
-1. **`sudo` has no TTY here.** Neither the `Bash` tool nor the `!` prefix can supply a password
-   - both go through the same non-interactive shell, and there's no `NOPASSWD` sudoers rule for
-   this user. Don't attempt `sudo` commands yourself; ask the user to run them in a real separate
-   terminal. (This was thoroughly re-verified in a prior session, including `sudo -n`, `sudo -l`,
-   and `id` checks - don't re-litigate it, just ask the user.)
-2. Full package list needed to build at all (Tauri's Linux WebKitGTK backend + llama.cpp's
-   cmake/bindgen build): `pkg-config libwebkit2gtk-4.1-dev libgtk-3-dev
-   libayatana-appindicator3-dev librsvg2-dev libssl-dev libxdo-dev cmake build-essential clang
-   libclang-dev`. Already installed as of the last session - check with
-   `which cmake pkg-config clang && dpkg -l libwebkit2gtk-4.1-dev` before assuming otherwise.
-3. If `clang`/`libclang-dev` end up missing (bindgen error like `'stdbool.h' file not found`),
-   the workaround without root is:
-   `BINDGEN_EXTRA_CLANG_ARGS="-I$(gcc -print-file-name=include)" cargo <check|build|test>` -
-   prefix every cargo invocation with this until `libclang-dev` is actually installed. Don't
-   hardcode the path into a committed `.cargo/config.toml` - it's machine-specific.
+This checkout runs on NixOS, not Debian. Do **not** try `apt`, and do not try `sudo` - it
+requires a password that cannot be supplied non-interactively. Everything needed is declared
+in the repo's `flake.nix` devshell instead:
+
+```sh
+cd ~/repos/SentryMAil
+nix develop            # or `direnv allow` once, via the checked-in .envrc
+```
+
+That shell provides rustc/cargo, cmake, clang, pkg-config, webkitgtk_4_1, gtk3, openssl,
+libsecret/dbus (for the `keyring` crate), libxdo, libayatana-appindicator, and nodejs. It also
+sets `LIBCLANG_PATH` and `BINDGEN_EXTRA_CLANG_ARGS` so `llama-cpp-sys-2`'s bindgen finds the C
+builtin headers - the `'stdbool.h' file not found` workaround from the Debian machine is no
+longer needed. `WEBKIT_DISABLE_DMABUF_RENDERER=1` is exported there too; without it the Tauri
+window renders blank on NixOS.
+
+Add a native dependency by editing `flake.nix`, never imperatively.
 
 ## Verification workflow (run these before considering any change done)
 
 ```sh
-cd /opt/Personal/EmailClient/email-client/src-tauri
-BINDGEN_EXTRA_CLANG_ARGS="-I$(gcc -print-file-name=include)" cargo check --lib
-BINDGEN_EXTRA_CLANG_ARGS="-I$(gcc -print-file-name=include)" cargo test --lib
-
-cd /opt/Personal/EmailClient/email-client
-npx tsc --noEmit
-npm run build
+cd ~/repos/SentryMAil
+nix develop --command bash -c 'cd src-tauri && cargo check --lib && cargo test --lib'
+nix develop --command bash -c 'npx tsc --noEmit && npm run build'
 ```
 
 There is **no display in this sandbox** and (as of the last session) **no real Gemma GGUF model

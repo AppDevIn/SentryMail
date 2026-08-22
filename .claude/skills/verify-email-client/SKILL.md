@@ -1,39 +1,33 @@
 ---
 name: verify-email-client
-description: Verify changes to the email-client app (Tauri v2 + React/TS + Rust) in a sandbox with no display and no real Gmail/Gemma model - runs Rust check/test and frontend type-check/build, and can screenshot the UI headlessly against mocked Tauri backend data. Use after editing anything under /opt/Personal/EmailClient/email-client.
+description: Verify changes to the email-client app (Tauri v2 + React/TS + Rust) in a sandbox with no display and no real Gmail/Gemma model - runs Rust check/test and frontend type-check/build, and can screenshot the UI headlessly against mocked Tauri backend data. Use after editing anything under ~/repos/SentryMAil.
 ---
 
 # Verify email-client changes
 
-This project (`/opt/Personal/EmailClient/email-client`) is a Tauri v2 desktop app. Most dev
+This project (`~/repos/SentryMAil`) is a Tauri v2 desktop app. Most dev
 sandboxes have no display and no real Gmail account/Gemma model file, so "run the app and look
 at it" isn't available. This skill covers what actually can be verified, and how to still get a
 real look at the UI when needed.
 
 ## 1. Rust backend
 
-The embedded `llm` module depends on `llama-cpp-2`, which needs `cmake`/`clang`/`libclang-dev`
-to build (see the `email-client-dev` agent in this project for the full toolchain list and the
-`sudo`-has-no-TTY caveat in this sandbox). If those aren't installed yet, `cargo check` will fail
-on the whole crate, not just `llm`/`triage` - that's expected, not a bug in unrelated code.
-
-If `clang`/`libclang-dev` are missing, bindgen may fail with `'stdbool.h' file not found`. Work
-around it without root:
+The embedded `llm` module depends on `llama-cpp-2`, which compiles llama.cpp's C++ sources
+with cmake and generates FFI bindings with bindgen. On NixOS every one of those deps comes from
+the repo's `flake.nix` devshell - there is nothing to install:
 
 ```sh
-cd /opt/Personal/EmailClient/email-client/src-tauri
-BINDGEN_EXTRA_CLANG_ARGS="-I$(gcc -print-file-name=include)" cargo check --lib
-BINDGEN_EXTRA_CLANG_ARGS="-I$(gcc -print-file-name=include)" cargo test --lib
+cd ~/repos/SentryMAil
+nix develop --command bash -c 'cd src-tauri && cargo check --lib && cargo test --lib'
 ```
 
-Once `clang libclang-dev` are actually installed, the env var is unnecessary but harmless to keep.
+If `cargo` is not found, you forgot to enter the devshell. Never `apt install` or `sudo` here.
 
 ## 2. Frontend
 
 ```sh
-cd /opt/Personal/EmailClient/email-client
-npx tsc --noEmit
-npm run build
+cd ~/repos/SentryMAil
+nix develop --command bash -c 'npx tsc --noEmit && npm run build'
 ```
 
 ## 3. Visual check of the UI (no display, no real backend)
@@ -51,7 +45,7 @@ Steps:
    npm package anywhere reachable, `npm install playwright` in a scratch directory - don't add it
    to `email-client/package.json`, it's a dev-only verification tool, not an app dependency).
 2. Start the Vite dev server in the background:
-   `cd /opt/Personal/EmailClient/email-client && nohup npm run dev -- --port 1420 --strictPort > /tmp/vite-dev.log 2>&1 &`
+   `cd ~/repos/SentryMAil && nohup npm run dev -- --port 1420 --strictPort > /tmp/vite-dev.log 2>&1 &`
    then poll `curl -s -o /dev/null -w "%{http_code}" http://localhost:1420` until it's `200`.
 3. Copy `screenshot-template.mjs` (next to this file) somewhere writable, edit the `accounts` /
    `emails` / `triage` fixture objects at the top to fit what you need to demonstrate, and run it
