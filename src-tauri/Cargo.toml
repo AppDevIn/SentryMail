@@ -35,4 +35,6 @@ chrono = { version = "0.4", features = ["serde"] }
 base64 = "0.22"
 llama-cpp-2 = "0.1.154"
 encoding_rs = "0.8.35"
+# Decompresses PhishTank's .gz feed (already in the tree transitively).
+flate2 = "1"
 

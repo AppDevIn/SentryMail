@@ -10,6 +10,7 @@
 
 pub mod canon;
 pub mod feeds;
+pub mod fetch;
 pub mod matching;
 
 use feeds::Source;
