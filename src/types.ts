@@ -242,5 +242,9 @@ export interface MeetingScanProgressEvent {
   gmail_thread_id: string;
   done: number;
   total: number;
+  /** Meetings found so far in this run. */
+  found: number;
+  /** Set on the final event when the run stopped early on its stop_after limit. */
+  stopped_early: boolean;
   error: string | null;
 }

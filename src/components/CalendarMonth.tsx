@@ -10,7 +10,7 @@ interface CalendarMonthProps {
   onJoin: (url: string) => void;
   onDismiss: (meetingId: number) => void;
   scanning: boolean;
-  scanProgress: { done: number; total: number } | null;
+  scanProgress: { done: number; total: number; found: number } | null;
   onScan: () => void;
   modelReady: boolean;
   onOpenSettings: () => void;
@@ -149,7 +149,7 @@ export function CalendarMonth({
           >
             {scanning
               ? scanProgress
-                ? `Scanning ${scanProgress.done}/${scanProgress.total}…`
+                ? `Scanning ${scanProgress.done}/${scanProgress.total} · ${scanProgress.found} found`
                 : "Scanning…"
               : "Scan mail"}
           </button>

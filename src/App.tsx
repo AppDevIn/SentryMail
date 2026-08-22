@@ -104,7 +104,9 @@ function App() {
     return new Date(now.getFullYear(), now.getMonth(), 1);
   });
   const [scanningMeetings, setScanningMeetings] = useState(false);
-  const [meetingScanProgress, setMeetingScanProgress] = useState<{ done: number; total: number } | null>(null);
+  const [meetingScanProgress, setMeetingScanProgress] = useState<
+    { done: number; total: number; found: number } | null
+  >(null);
   // Emails we already auto-analyzed on open this session - don't keep retrying a failure.
   const autoAnalyzed = useRef<Set<number>>(new Set());
   // How many rows are currently loaded, so refreshes keep the same depth.
@@ -374,22 +376,32 @@ function App() {
 
   useEffect(() => {
     const unlisten = listen<MeetingScanProgressEvent>("meeting-scan-progress", (event) => {
-      const { done, total, error: scanError } = event.payload;
-      setMeetingScanProgress({ done, total });
+      const { done, total, found, stopped_early, error: scanError } = event.payload;
+      setMeetingScanProgress({ done, total, found });
       if (scanError) setError(scanError);
-      if (done >= total) setMeetingScanProgress(null);
+      if (done >= total || stopped_early) setMeetingScanProgress(null);
     });
     return () => {
       void unlisten.then((f) => f());
     };
   }, []);
 
+  // Each thread costs one on-device inference (tens of seconds), so a full-inbox scan runs
+  // for hours. Stop after a handful: every scanned thread is recorded, so pressing Scan
+  // again resumes with the threads not yet looked at rather than repeating work.
+  const MEETING_SCAN_BATCH = 5;
+
   const doScanMeetings = () =>
     withBusy(async () => {
       setScanningMeetings(true);
       try {
-        await api.scanMeetings(selectedAccountId ?? undefined);
+        const found = await api.scanMeetings(selectedAccountId ?? undefined, MEETING_SCAN_BATCH);
         await refreshMeetings(calendarMonth, selectedAccountId);
+        setNotice(
+          found === 0
+            ? "No meetings found in the threads scanned so far. Press Scan mail again to keep looking further back."
+            : `Found ${found} meeting${found === 1 ? "" : "s"}. Press Scan mail again to keep looking further back.`,
+        );
       } finally {
         setScanningMeetings(false);
         setMeetingScanProgress(null);

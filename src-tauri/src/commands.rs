@@ -2396,6 +2396,10 @@ pub struct MeetingScanProgressEvent {
     pub gmail_thread_id: String,
     pub done: u32,
     pub total: u32,
+    /// Meetings found so far this run - drives the "found N" progress copy.
+    pub found: u32,
+    /// True on the final event when the run stopped early on `stop_after`.
+    pub stopped_early: bool,
     pub error: Option<String>,
 }
 
@@ -2493,27 +2497,49 @@ pub async fn scan_meetings(
     app: AppHandle,
     state: State<'_, AppState>,
     account_id: Option<i64>,
+    stop_after: Option<u32>,
 ) -> Result<u32, String> {
     let handle = {
         let slot = state.triage_llm.lock().map_err(|e| e.to_string())?;
         slot.clone().ok_or("model not loaded - call load_model first")?
     };
 
+    // Newest threads first (see the ORDER BY), so an early stop returns the meetings most
+    // likely to still be ahead of the user rather than whatever is oldest.
     let threads = threads_needing_scan(&state, account_id)?;
     let total = threads.len() as u32;
     let today = chrono::Local::now().format("%Y-%m-%d").to_string();
 
+    let mut found = 0u32;
     for (i, thread) in threads.iter().enumerate() {
         let outcome = meetings::scan_thread(&state.db, &handle, thread, &today).await;
-        let event = MeetingScanProgressEvent {
-            gmail_thread_id: thread.gmail_thread_id.clone(),
-            done: i as u32 + 1,
-            total,
-            error: outcome.err().map(|e| e.to_string()),
+        let (err, hit) = match outcome {
+            Ok(Some(_)) => (None, true),
+            Ok(None) => (None, false),
+            Err(e) => (Some(e), false),
         };
-        let _ = app.emit("meeting-scan-progress", event);
+        if hit {
+            found += 1;
+        }
+        // Stopping early is safe to resume: every scanned thread is recorded in
+        // `thread_scans`, so a later run continues with the ones not yet looked at.
+        let stopped_early = stop_after.is_some_and(|limit| found >= limit);
+        let _ = app.emit(
+            "meeting-scan-progress",
+            MeetingScanProgressEvent {
+                gmail_thread_id: thread.gmail_thread_id.clone(),
+                done: i as u32 + 1,
+                total,
+                found,
+                stopped_early,
+                error: err,
+            },
+        );
+        if stopped_early {
+            break;
+        }
     }
-    Ok(total)
+    Ok(found)
 }
 
 /// Meetings starting in `[from, to)` - the range the visible calendar month covers.
@@ -2531,17 +2557,6 @@ pub fn list_meetings(
 #[tauri::command]
 pub fn dismiss_meeting(state: State<'_, AppState>, meeting_id: i64) -> Result<(), String> {
     meetings::dismiss_meeting(&state.db, meeting_id)
-}
-
-/// Fetches this message's remote images so the sandboxed frame can show them as data URIs,
-/// without the frame itself ever making a network request. Only ever called after the user
-/// explicitly asks for the pictures - never during sync, and never automatically.
-///
-/// `email_id` is unused today but scopes the command to a message, and is where a future
-/// "always show pictures from this sender" check would live.
-#[tauri::command]
-pub async fn fetch_remote_images(_email_id: i64, urls: Vec<String>) -> Result<Vec<RemoteImageDto>, String> {
-    images::fetch_remote_images(urls).await
 }
 
 #[cfg(test)]
@@ -2613,4 +2628,15 @@ mod tests {
         assert!(fetch.is_empty());
         assert!(skip.is_empty());
     }
+}
+
+/// Fetches this message's remote images so the sandboxed frame can show them as data URIs,
+/// without the frame itself ever making a network request. Only ever called after the user
+/// explicitly asks for the pictures - never during sync, and never automatically.
+///
+/// `email_id` is unused today but scopes the command to a message, and is where a future
+/// "always show pictures from this sender" check would live.
+#[tauri::command]
+pub async fn fetch_remote_images(_email_id: i64, urls: Vec<String>) -> Result<Vec<RemoteImageDto>, String> {
+    images::fetch_remote_images(urls).await
 }

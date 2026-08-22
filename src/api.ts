@@ -121,8 +121,13 @@ export const api = {
   embedPending: (accountId?: number) =>
     invoke<number>("embed_pending", { accountId: accountId ?? null }),
   /** Re-scans threads whose meeting data is stale. One inference per changed thread. */
-  scanMeetings: (accountId?: number) =>
-    invoke<number>("scan_meetings", { accountId: accountId ?? null }),
+  /** Returns the number of meetings found. `stopAfter` ends the run early once that many
+   *  are found; scanned threads are recorded, so a later call resumes where it stopped. */
+  scanMeetings: (accountId?: number, stopAfter?: number) =>
+    invoke<number>("scan_meetings", {
+      accountId: accountId ?? null,
+      stopAfter: stopAfter ?? null,
+    }),
   /** Meetings starting in [from, to) - the visible month. Excludes dismissed ones. */
   listMeetings: (from: string, to: string, accountId?: number) =>
     invoke<MeetingDto[]>("list_meetings", { accountId: accountId ?? null, from, to }),
