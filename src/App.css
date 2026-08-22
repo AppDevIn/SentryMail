@@ -2490,6 +2490,19 @@ select:focus-visible {
 .calendar-daynum {
   font-size: 11px;
   color: var(--text-muted);
+  background: none;
+  border: none;
+  padding: 0;
+  font-family: inherit;
+  cursor: pointer;
+  align-self: flex-start;
+  line-height: 1.4;
+}
+
+.calendar-daynum:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-radius: 3px;
 }
 
 .calendar-cell.is-today .calendar-daynum {

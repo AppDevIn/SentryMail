@@ -73,6 +73,13 @@ export function CalendarMonth({
 }: CalendarMonthProps) {
   const [selectedDay, setSelectedDay] = useState<number | null>(null);
 
+  // The open day belongs to the month it was opened in; carrying it across navigation would
+  // leave the same day number spuriously expanded in the new month.
+  const changeMonth = (next: Date) => {
+    setSelectedDay(null);
+    onChangeMonth(next);
+  };
+
   const byDay = useMemo(() => {
     const map = new Map<number, MeetingDto[]>();
     for (const m of meetings) {
@@ -115,21 +122,21 @@ export function CalendarMonth({
           <button
             type="button"
             className="btn btn-mini mono"
-            onClick={() => onChangeMonth(new Date(month.getFullYear(), month.getMonth() - 1, 1))}
+            onClick={() => changeMonth(new Date(month.getFullYear(), month.getMonth() - 1, 1))}
           >
             ‹ PREV
           </button>
           <button
             type="button"
             className="btn btn-mini mono"
-            onClick={() => onChangeMonth(startOfMonth(new Date()))}
+            onClick={() => changeMonth(startOfMonth(new Date()))}
           >
             TODAY
           </button>
           <button
             type="button"
             className="btn btn-mini mono"
-            onClick={() => onChangeMonth(new Date(month.getFullYear(), month.getMonth() + 1, 1))}
+            onClick={() => changeMonth(new Date(month.getFullYear(), month.getMonth() + 1, 1))}
           >
             NEXT ›
           </button>
@@ -182,7 +189,20 @@ export function CalendarMonth({
               }`}
               onClick={() => setSelectedDay(expanded ? null : day)}
             >
-              <span className="mono calendar-daynum">{day}</span>
+              <button
+                type="button"
+                className="mono calendar-daynum"
+                aria-expanded={expanded}
+                aria-label={`${day} ${monthLabel}, ${dayMeetings.length} meeting${
+                  dayMeetings.length === 1 ? "" : "s"
+                }`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setSelectedDay(expanded ? null : day);
+                }}
+              >
+                {day}
+              </button>
               <ul className="calendar-events">
                 {dayMeetings.map((m) => (
                   <li key={m.id} className={`calendar-event is-${m.kind}`}>
