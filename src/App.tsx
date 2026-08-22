@@ -727,10 +727,15 @@ function App() {
                 accounts={accounts}
                 defaultAccountId={selectedAccountId ?? (accounts.length === 1 ? accounts[0].id : null)}
                 narrow={narrow}
+                modelReady={modelReady}
+                onOpenSettings={() => setSettingsOpen(true)}
                 onClose={closePane}
                 onSend={async (accountId, to, cc, subject, body) => {
                   await api.sendMessage(accountId, to, cc, subject, body);
                 }}
+                onDraftWithAi={(accountId, to, cc, subject, instructions, previousBody) =>
+                  api.draftMessage(accountId, to, cc, subject, instructions, previousBody)
+                }
               />
             ) : selectedEmail ? (
               <EmailDetail

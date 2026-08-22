@@ -289,6 +289,75 @@ mod e2e_tests {
         assert!(chosen.iter().all(|c| names.contains(c)), "grammar must restrict to known names: {chosen:?}");
     }
 
+    /// Compose-pane draft against the real model (ADR 0015): a fresh message from
+    /// recipients + instructions with no subject (the model must supply one), then a
+    /// "shorter" revision of that body on the same context. Run with:
+    ///
+    /// ```sh
+    /// EMAIL_CLIENT_MODEL="$HOME/Library/Application Support/com.emailclient.app/models/gemma.gguf" \
+    ///   cargo test --lib real_model_compose -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore]
+    fn real_model_compose_writes_subject_and_body_then_revises() {
+        use crate::llm::grammar::{COMPOSE_GBNF, COMPOSE_GRAMMAR_ROOT};
+        use crate::triage::{build_compose_prompt, ComposeInput};
+
+        let path = std::env::var("EMAIL_CLIENT_MODEL")
+            .expect("set EMAIL_CLIENT_MODEL to the path of a Gemma GGUF file");
+        let backend = super::super::shared_backend().expect("backend");
+        let model = LlamaModel::load_from_file(&backend, &path, &LlamaModelParams::default())
+            .expect("model load");
+        let ctx_size = NonZeroU32::new(CONTEXT_SIZE).unwrap();
+        let mut ctx = model
+            .new_context(&backend, LlamaContextParams::default().with_n_ctx(Some(ctx_size)))
+            .expect("context");
+
+        // 1. Fresh draft, blank subject: the model has to write both.
+        let first = ComposeInput {
+            user_email: "jeya@nushackers.org",
+            to: "dana.k@example.com",
+            cc: "",
+            subject: "",
+            instructions: "ask if Thursday 3pm works for the design review, and say I can move it if not",
+            previous_body: "",
+        };
+        let prompt = build_compose_prompt(&first);
+        let started = std::time::Instant::now();
+        let out = generate_one(&model, &mut ctx, &prompt, 450, COMPOSE_GBNF, COMPOSE_GRAMMAR_ROOT).expect("compose draft");
+        eprintln!("--- compose draft ({:.1}s) ---\n{out}", started.elapsed().as_secs_f32());
+        let v: serde_json::Value = serde_json::from_str(&out).expect("compose draft is JSON");
+        let subject = v["subject"].as_str().expect("subject string").trim().to_string();
+        let body = v["body"].as_str().expect("body string").to_string();
+        assert!(!subject.is_empty(), "model must suggest a subject when none was given");
+        assert!(!body.trim().is_empty());
+        let lower = body.to_lowercase();
+        assert!(lower.contains("thursday"), "body should carry the instruction's content: {body}");
+        assert!(lower.contains("jeya"), "body should be signed as the user: {body}");
+        assert!(!lower.contains("dear jeya") && !lower.starts_with("hi jeya"), "must not address the user themself: {body}");
+        let normalized = crate::triage::normalize_draft(&body);
+        eprintln!("--- subject: {subject}\n--- normalized body ---\n{normalized}");
+
+        // 2. Revision on the same context: keep the user's subject, shorten the body.
+        let second = ComposeInput {
+            user_email: "jeya@nushackers.org",
+            to: "dana.k@example.com",
+            cc: "",
+            subject: &subject,
+            instructions: "make it shorter, two sentences at most",
+            previous_body: &normalized,
+        };
+        let prompt = build_compose_prompt(&second);
+        let started = std::time::Instant::now();
+        let out = generate_one(&model, &mut ctx, &prompt, 450, COMPOSE_GBNF, COMPOSE_GRAMMAR_ROOT).expect("compose redraft");
+        eprintln!("--- compose redraft ({:.1}s) ---\n{out}", started.elapsed().as_secs_f32());
+        let v: serde_json::Value = serde_json::from_str(&out).expect("compose redraft is JSON");
+        let body2 = v["body"].as_str().expect("body string").to_string();
+        assert!(!body2.trim().is_empty());
+        eprintln!("--- normalized redraft ---\n{}", crate::triage::normalize_draft(&body2));
+        assert!(body2.chars().count() < body.chars().count() + 80, "redraft should not grow much: {} vs {}", body2.chars().count(), body.chars().count());
+    }
+
     /// Label precision against the real model: a single, loosely described "Friday Hacks"
     /// label (the user's real description, typos included) must NOT be applied to a general
     /// NUS Hackers coreteam-recruitment email, but MUST be applied to a genuine Friday Hacks

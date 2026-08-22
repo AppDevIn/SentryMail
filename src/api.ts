@@ -7,6 +7,7 @@ import type {
   ArchiveResult,
   FolderCounts,
   AttachmentDto,
+  ComposeDraft,
   LabelDto,
   LabelSuggestion,
   MeetingDto,
@@ -71,6 +72,23 @@ export const api = {
       emailId,
       instructions: instructions?.trim() ? instructions.trim() : null,
       previousDraft: previousDraft?.trim() ? previousDraft : null,
+    }),
+  /** New-message draft (subject + body) from the local model for the compose pane. */
+  draftMessage: (
+    accountId: number,
+    to: string,
+    cc: string | null,
+    subject: string,
+    instructions?: string,
+    previousBody?: string,
+  ) =>
+    invoke<ComposeDraft>("draft_message", {
+      accountId,
+      to,
+      cc,
+      subject,
+      instructions: instructions?.trim() ? instructions.trim() : null,
+      previousBody: previousBody?.trim() ? previousBody : null,
     }),
   /** Opens an http(s)/mailto URL in the user's default browser or mail app. */
   openExternal: (url: string) => openUrl(url),

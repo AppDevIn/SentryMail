@@ -1715,6 +1715,43 @@ pub async fn draft_reply(
     .await
 }
 
+/// Drafts a brand-new message for the compose pane with the on-device model (ADR 0015).
+/// `previous_body` is the editor's current text when the user is revising a draft.
+#[tauri::command]
+pub async fn draft_message(
+    state: State<'_, AppState>,
+    account_id: i64,
+    to: String,
+    cc: Option<String>,
+    subject: String,
+    instructions: Option<String>,
+    previous_body: Option<String>,
+) -> Result<triage::ComposeDraft, String> {
+    let (handle, user_email) = {
+        let llm_slot = state.triage_llm.lock().map_err(|e| e.to_string())?;
+        let handle = llm_slot
+            .clone()
+            .ok_or("model not loaded - call load_model first")?;
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        let user_email: String = conn
+            .query_row("SELECT email_address FROM accounts WHERE id = ?1", params![account_id], |row| row.get(0))
+            .map_err(|e| e.to_string())?;
+        (handle, user_email)
+    };
+    triage::draft_message(
+        &handle,
+        &triage::ComposeInput {
+            user_email: &user_email,
+            to: &to,
+            cc: cc.as_deref().unwrap_or(""),
+            subject: &subject,
+            instructions: instructions.as_deref().unwrap_or(""),
+            previous_body: previous_body.as_deref().unwrap_or(""),
+        },
+    )
+    .await
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct TriageProgressEvent {
     pub email_id: i64,

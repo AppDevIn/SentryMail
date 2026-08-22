@@ -61,6 +61,12 @@ export interface TriageResult {
   done: boolean;
 }
 
+/** New-message draft from the on-device model (compose pane). */
+export interface ComposeDraft {
+  subject: string;
+  body: string;
+}
+
 export type ModelStatus =
   | { state: "not_configured" }
   | { state: "not_loaded" }

@@ -15,6 +15,16 @@ string ::= "\"" char* "\""
 "#;
 pub const REPLY_GRAMMAR_ROOT: &str = "root";
 
+/// GBNF grammar for a new-message draft written from the compose form: subject and body.
+/// Same one-line-rule-body caveat as the other grammars here.
+pub const COMPOSE_GBNF: &str = r#"root ::= "{" ws "\"subject\":" ws string "," ws "\"body\":" ws string ws "}"
+ws ::= [ \t\n]*
+char ::= [^"\\] | "\\" (["\\/bfnrt] | "u" hex hex hex hex)
+hex ::= [0-9a-fA-F]
+string ::= "\"" char* "\""
+"#;
+pub const COMPOSE_GRAMMAR_ROOT: &str = "root";
+
 /// GBNF grammar for a one-line message summary.
 pub const SUMMARY_GBNF: &str = r#"root ::= "{" ws "\"summary\":" ws string ws "}"
 ws ::= [ \t\n]*

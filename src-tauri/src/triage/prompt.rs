@@ -263,6 +263,59 @@ pub fn build_reply_prompt_with(
     )
 }
 
+const COMPOSE_INSTRUCTIONS: &str = r#"You are a private, fully on-device writing assistant inside an email client. Nothing you read or write leaves this device.
+
+Write a NEW email on behalf of the user (this is not a reply; there is no earlier message). The user has given you the recipients, possibly a subject, and instructions describing what the email should say. Follow the instructions closely and write in the user's own voice: natural, clear, and concise - under 150 words unless the instructions call for more. Never invent facts, dates, amounts, or commitments the instructions do not give you; if something essential is missing, leave a short [placeholder] for the user to fill in rather than guessing. Never include personal, financial, or credential details.
+
+Address the recipient by the name that can be inferred from the To address (e.g. "Hi Dana," for dana.k@example.com); if no name can be inferred, use a neutral greeting like "Hello,". Lay the body out like a real email, using \n for line breaks: a greeting line, a blank line, one to three short paragraphs separated by blank lines, a blank line, a sign-off line (e.g. "Best regards,"), then the user's first name on its own line.
+
+Also provide a subject: repeat the user's subject exactly if one is given, otherwise write a short, specific one (under 10 words) that says what the email is about.
+
+Respond with ONLY a JSON object of the form {"subject": "...", "body": "..."}. No prose before or after."#;
+
+/// Inputs for a new-message draft from the compose form. `subject` and `previous_body` may
+/// be empty; `instructions` is what the user typed in the Instructions row (may also be
+/// empty when they only filled in a subject and asked for a draft).
+pub struct ComposeInput<'a> {
+    pub user_email: &'a str,
+    pub to: &'a str,
+    pub cc: &'a str,
+    pub subject: &'a str,
+    pub instructions: &'a str,
+    /// The body currently in the editor; when present the model revises it instead of
+    /// starting over (so "shorter" / "more formal" work as expected).
+    pub previous_body: &'a str,
+}
+
+/// Prompt for a brand-new message written in the compose pane (no email to reply to).
+pub fn build_compose_prompt(input: &ComposeInput) -> String {
+    let name = first_name_from_email(input.user_email);
+    let persona = format!(
+        "You are writing AS the user, {name} <{}>, in the first person. Sign off as {name}.",
+        input.user_email
+    );
+    let to = if input.to.trim().is_empty() { "(not given yet)" } else { input.to.trim() };
+    let cc = if input.cc.trim().is_empty() { "(none)" } else { input.cc.trim() };
+    let subject = if input.subject.trim().is_empty() { "(none yet - write one)" } else { input.subject.trim() };
+    let guidance = match input.instructions.trim() {
+        "" => "(none given - write a short, polite message that fits the subject and recipients)".to_string(),
+        i => truncate_chars(i, 1500),
+    };
+    let revision = match input.previous_body.trim() {
+        "" => String::new(),
+        d => format!(
+            "\n\nCurrent draft - rewrite it according to the instructions, keeping what still fits:\n---\n{}\n---",
+            truncate_chars(d, 2000)
+        ),
+    };
+    format!(
+        "{TURN_START}user\n{COMPOSE_INSTRUCTIONS}\n\n{persona}\n\n\
+         From: {}\nTo: {}\nCc: {}\nSubject: {}\n\n\
+         What the email should say (the user's instructions):\n{}{revision}\n{TURN_END}\n{TURN_START}model\n",
+        input.user_email, to, cc, subject, guidance
+    )
+}
+
 const SUMMARY_INSTRUCTIONS: &str = r#"You are a private, fully on-device assistant inside an email client. Summarize the email message below as ONE headline-style line of at most 14 words, in direct active voice, stating what it says or asks - like a good inbox snippet (e.g. "Venue confirmed: COM3 SR12, arrive 6:50 PM Friday", "Bio and photo needed by 17 Aug for publicity"). Do not invent facts. Do not start with "The sender" or the sender's name.
 
 Respond with ONLY a JSON object of the form {"summary": "..."}."#;
@@ -568,5 +621,43 @@ mod tests {
         assert!(prompt.contains("earlier quoted messages in this thread were omitted"));
         assert!(prompt.contains("only CC'd"));
         assert!(!prompt.contains("> old"));
+    }
+
+    #[test]
+    fn compose_prompt_carries_recipients_instructions_and_previous_body() {
+        let prompt = build_compose_prompt(&ComposeInput {
+            user_email: "bob@example.com",
+            to: "dana.k@example.com",
+            cc: "",
+            subject: "",
+            instructions: "ask if Thursday 3pm works for the review",
+            previous_body: "Hi Dana, does Thursday work?",
+        });
+        assert!(prompt.contains("writing AS the user, Bob <bob@example.com>"));
+        assert!(prompt.contains("To: dana.k@example.com"));
+        assert!(prompt.contains("Cc: (none)"));
+        assert!(prompt.contains("Subject: (none yet - write one)"));
+        assert!(prompt.contains("ask if Thursday 3pm works for the review"));
+        assert!(prompt.contains("Current draft - rewrite it"));
+        assert!(prompt.contains("Hi Dana, does Thursday work?"));
+        assert!(prompt.contains("\"subject\""));
+        assert!(prompt.contains("\"body\""));
+        assert!(prompt.ends_with(&format!("{TURN_START}model\n")));
+    }
+
+    #[test]
+    fn compose_prompt_without_instructions_or_draft_still_asks_for_a_message() {
+        let prompt = build_compose_prompt(&ComposeInput {
+            user_email: "bob@example.com",
+            to: "",
+            cc: "",
+            subject: "Lunch on Friday",
+            instructions: "   ",
+            previous_body: "",
+        });
+        assert!(prompt.contains("Subject: Lunch on Friday"));
+        assert!(prompt.contains("To: (not given yet)"));
+        assert!(prompt.contains("(none given"));
+        assert!(!prompt.contains("Current draft"));
     }
 }
