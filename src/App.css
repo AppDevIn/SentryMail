@@ -470,6 +470,7 @@ select:focus-visible {
   height: 100vh;
   overflow: hidden;
   background: var(--bg-app);
+  position: relative;
 }
 
 .app-shell.is-narrow {
@@ -3362,11 +3363,7 @@ select:focus-visible {
   background: var(--accent-bg);
 }
 
-/* floating command dock (bottom-right of the content pane) */
-.content {
-  position: relative;
-}
-
+/* floating command dock (bottom-right of the window) */
 .voice-dock {
   position: absolute;
   right: 24px;
