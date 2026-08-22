@@ -453,7 +453,11 @@ fn map_result(email_id: i64, raw: RawTriageOutput) -> TriageResult {
         summary: raw.summary,
         risk: risk_str(&raw.risk).to_string(),
         signals_json: serde_json::to_string(
-            &raw.signals.iter().map(signal_str).collect::<Vec<_>>(),
+            // The GBNF grammar cannot express set-uniqueness, so the model does sometimes
+            // emit the same signal twice ("suspicious_links" showing up in one real run).
+            // Deduplicate here, keeping first-mentioned order, so the UI never shows a
+            // doubled badge.
+            &dedupe_signals(&raw.signals),
         )
         .unwrap_or_else(|_| "[]".to_string()),
         risk_explanation: raw.risk_explanation,
@@ -464,6 +468,18 @@ fn map_result(email_id: i64, raw: RawTriageOutput) -> TriageResult {
         user_risk: None,
         done: false,
     }
+}
+
+/// Signal names in first-mentioned order, with repeats removed.
+fn dedupe_signals(signals: &[RawSignal]) -> Vec<&'static str> {
+    let mut out: Vec<&'static str> = Vec::with_capacity(signals.len());
+    for s in signals {
+        let name = signal_str(s);
+        if !out.contains(&name) {
+            out.push(name);
+        }
+    }
+    out
 }
 
 fn parse_error_result(email_id: i64) -> TriageResult {
@@ -671,6 +687,21 @@ mod tests {
     fn normalize_draft_moves_name_after_sign_off_to_own_line() {
         let d = "Hi Priya,\n\nThu 14:00 works.\nBest regards, Jeya";
         assert_eq!(normalize_draft(d), "Hi Priya,\n\nThu 14:00 works.\n\nBest regards,\nJeya");
+    }
+
+    #[test]
+    fn duplicate_signals_are_collapsed_preserving_order() {
+        // Taken from a real Gemma 4 run: the grammar permits repeats, so the model emitted
+        // "suspicious_links" twice and the UI would have drawn the badge twice.
+        let json = r#"{"type":"scam_risk","priority":"high","summary":"s","risk":"danger",
+            "signals":["urgency_pressure","suspicious_links","credential_request","suspicious_links"],
+            "risk_explanation":"e","action":{"kind":"warning","warning":"w","next_step":"n"}}"#;
+        let raw: RawTriageOutput = serde_json::from_str(json).unwrap();
+        let result = map_result(1, raw);
+        assert_eq!(
+            result.signals_json,
+            r#"["urgency_pressure","suspicious_links","credential_request"]"#
+        );
     }
 
     #[test]
