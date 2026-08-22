@@ -12,6 +12,7 @@ import type {
   FolderCounts,
   LabelDto,
   ListFilter,
+  ListSort,
   ModelStatus,
   SearchResultDto,
   SyncProgressEvent,
@@ -76,6 +77,7 @@ function App() {
   const selectedLabelRef = useRef<string | null>(null);
   selectedLabelRef.current = selectedLabelId;
   const [filter, setFilter] = useState<ListFilter>("all");
+  const [sort, setSort] = useState<ListSort>("newest");
   const [modelStatus, setModelStatus] = useState<ModelStatus>({ state: "not_configured" });
   const [embedModelStatus, setEmbedModelStatus] = useState<ModelStatus>({ state: "not_configured" });
   const [busy, setBusy] = useState(false);
@@ -672,6 +674,8 @@ function App() {
             filter={filter}
             onFilter={setFilter}
             selectedEmailId={selectedEmailId}
+            sort={sort}
+            onSort={setSort}
             onOpen={openEmail}
             search={{
               semanticEnabled: embedModelStatus.state === "ready",

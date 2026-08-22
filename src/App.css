@@ -1023,6 +1023,75 @@ select:focus-visible {
   background: var(--accent);
 }
 
+/* Sort toggle: one button at the right end of the filter tab row; click flips NEWEST / PRIORITY. */
+.sort-toggle {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 8px;
+  margin-left: auto;
+  white-space: nowrap;
+  padding: 5px 12px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--border-strong);
+  background: transparent;
+  color: var(--text-2);
+  font-size: 10px;
+}
+
+.sort-toggle:hover {
+  color: var(--text);
+  background: var(--surface);
+}
+
+.sort-toggle.active {
+  background: var(--surface);
+  border-color: var(--neutral-border);
+  color: var(--text-heading);
+}
+
+.sort-label {
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  color: var(--text-muted);
+}
+
+.sort-value {
+  letter-spacing: 0.08em;
+}
+
+.sort-toggle.active .sort-value {
+  color: var(--accent-strong);
+}
+
+.sort-glyph {
+  font-size: 11px;
+  line-height: 1;
+  color: var(--text-muted);
+}
+
+.sort-toggle:hover .sort-glyph,
+.sort-toggle.active .sort-glyph {
+  color: inherit;
+}
+
+/* Tier group headers inside the list while sorted by priority. */
+.tier-header {
+  padding: 14px 28px 6px 24px;
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  color: var(--text-muted);
+  background: var(--bg-app);
+  border-bottom: 1px solid var(--border);
+}
+
+.sort-hint {
+  margin: 8px 0 0;
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  color: var(--text-muted);
+}
+
 .search-banner {
   flex: 0 0 auto;
   display: flex;

@@ -1,6 +1,6 @@
-import { useEffect, useRef } from "react";
+import { Fragment, useEffect, useRef } from "react";
 import type { ReactNode } from "react";
-import type { ApiFolder, EmailDto, LabelDto, ListFilter, SearchResultDto, TriageResult } from "../types";
+import type { ApiFolder, EmailDto, LabelDto, ListFilter, ListSort, Priority, SearchResultDto, TriageResult } from "../types";
 import { RiskPill } from "./Badge";
 import { RISK_NOTES, addressingFor, effectiveRisk, formatListTime, parseSender, previewLine, splitQuotedHistory } from "../format";
 
@@ -57,6 +57,8 @@ interface EmailListProps {
   filter: ListFilter;
   onFilter: (filter: ListFilter) => void;
   selectedEmailId: number | null;
+  sort: ListSort;
+  onSort: (sort: ListSort) => void;
   onOpen: (emailId: number) => void;
   search: SearchState;
   busy: boolean;
@@ -81,6 +83,25 @@ const FILTERS: [ListFilter, string][] = [
   ["flagged", "Flagged"],
 ];
 
+// Lower rank sorts first. Unanalyzed rows sink below every analyzed tier.
+const PRIORITY_RANK: Record<Priority, number> = { high: 0, medium: 1, low: 2 };
+// Group headers shown between tiers while sorted by priority, indexed by rank.
+const TIER_LABELS = ["HIGH PRIORITY", "MEDIUM PRIORITY", "LOW PRIORITY", "NOT ANALYZED"];
+
+function priorityRank(triage: TriageResult | undefined): number {
+  return triage && triage.triage_status === "ok" ? PRIORITY_RANK[triage.priority] : 3;
+}
+
+/** Orders loaded rows; "newest" keeps the backend order, "priority" groups by triage tier, newest first within a tier. */
+function sortEmails(sort: ListSort, list: EmailDto[], triageByEmail: Record<number, TriageResult>): EmailDto[] {
+  if (sort === "newest") return list;
+  return [...list].sort((a, b) => {
+    const byRank = priorityRank(triageByEmail[a.id]) - priorityRank(triageByEmail[b.id]);
+    if (byRank !== 0) return byRank;
+    return b.received_at.localeCompare(a.received_at) || b.id - a.id;
+  });
+}
+
 export function EmailList({
   title,
   folder,
@@ -96,6 +117,8 @@ export function EmailList({
   filter,
   onFilter,
   selectedEmailId,
+  sort,
+  onSort,
   onOpen,
   search,
   busy,
@@ -111,7 +134,11 @@ export function EmailList({
     selectedRef.current?.scrollIntoView({ block: "nearest" });
   }, [selectedEmailId]);
 
-  const visible = emails.filter((e) => matchesFilter(filter, e, triageByEmail[e.id]));
+  const visible = sortEmails(
+    sort,
+    emails.filter((e) => matchesFilter(filter, e, triageByEmail[e.id])),
+    triageByEmail,
+  );
   const searching = search.results !== null;
   // Flagged / Quarantine folders already contain only risky mail; the filter tab is redundant there.
   const filters = folder === "flagged" || folder === "quarantine" ? FILTERS.filter(([v]) => v !== "flagged") : FILTERS;
@@ -187,7 +214,23 @@ export function EmailList({
               {label}
             </button>
           ))}
+          <button
+            type="button"
+            className={`sort-toggle mono ${sort === "priority" ? "active" : ""}`}
+            aria-pressed={sort === "priority"}
+            title={sort === "priority" ? "Sorted by priority. Click for newest first." : "Sorted newest first. Click to sort by priority."}
+            onClick={() => onSort(sort === "priority" ? "newest" : "priority")}
+          >
+            <span className="sort-label">SORT</span>
+            <span className="sort-value">{sort === "priority" ? "PRIORITY" : "NEWEST"}</span>
+            <span className="sort-glyph" aria-hidden="true">
+              ⇅
+            </span>
+          </button>
         </div>
+        {sort === "priority" && !searching && emails.length > 0 && !visible.some((e) => priorityRank(triageByEmail[e.id]) < 3) && (
+          <p className="mono sort-hint">PRIORITY NEEDS ANALYZED THREADS · NONE IN THE LOADED MESSAGES YET</p>
+        )}
       </header>
 
       {searching ? (
