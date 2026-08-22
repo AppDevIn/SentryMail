@@ -343,7 +343,7 @@ export function EmailList({
                 </p>
               </li>
             )}
-            {visible.map((email) => {
+            {visible.map((email, i) => {
               const triage = triageByEmail[email.id];
               const sender = parseSender(email.sender);
               const risk = effectiveRisk(triage);
@@ -351,8 +351,12 @@ export function EmailList({
               const addressing = addressingFor(email, accountEmails[email.account_id] ?? null);
               const selected = email.id === selectedEmailId;
               const unread = email.thread_unread > 0;
+              const rank = priorityRank(triage);
+              const startsTier = sort === "priority" && (i === 0 || priorityRank(triageByEmail[visible[i - 1].id]) !== rank);
               return (
-                <li key={email.id} ref={selected ? selectedRef : undefined}>
+                <Fragment key={email.id}>
+                {startsTier && <li className="tier-header mono">{TIER_LABELS[rank]}</li>}
+                <li ref={selected ? selectedRef : undefined}>
                   <button
                     type="button"
                     className={`row ${unread ? "row-unread" : ""} ${selected ? "row-selected" : ""}`}
@@ -400,6 +404,7 @@ export function EmailList({
                     )}
                   </button>
                 </li>
+                </Fragment>
               );
             })}
             {hasMore ? (
