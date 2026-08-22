@@ -195,10 +195,6 @@ export function EmailList({
             <span className="mono search-hint sm-pulse" aria-live="polite">
               searching
             </span>
-          ) : search.semanticEnabled ? (
-            <span className="mono search-hint is-accent" title="Search model loaded: results also include emails related by meaning">
-              meaning
-            </span>
           ) : null}
         </form>
         <div className="tab-row" role="tablist" aria-label="Filter">
