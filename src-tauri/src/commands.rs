@@ -2242,8 +2242,14 @@ fn threads_needing_scan(
             "SELECT e.account_id,
                     e.gmail_thread_id,
                     a.email_address,
-                    MAX(e.id)    AS newest_email_id,
-                    COUNT(e.id)  AS message_count
+                    -- The newest message *by date*, not by rowid: backfill inserts older
+                    -- mail later, so MAX(id) is not the latest message in a thread.
+                    (SELECT id FROM emails x
+                      WHERE x.account_id = e.account_id
+                        AND x.gmail_thread_id = e.gmail_thread_id
+                      ORDER BY x.received_at DESC, x.id DESC
+                      LIMIT 1)  AS newest_email_id,
+                    COUNT(e.id) AS message_count
              FROM emails e
              JOIN accounts a ON a.id = e.account_id
              LEFT JOIN thread_scans ts
