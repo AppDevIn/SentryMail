@@ -2459,9 +2459,14 @@ pub struct MeetingScanProgressEvent {
 /// A thread is rescanned when its stored message count differs from what was scanned last
 /// time, which is what makes a meeting follow the conversation: a later message that moves
 /// the time, or finally supplies the link, gets picked up on the next scan.
+/// `limit` is applied **in SQL**, not afterwards. Loading every unscanned thread's message
+/// bodies first and truncating later pulls the whole mailbox into memory while holding the DB
+/// mutex, which blocks every other query and freezes the UI - especially now that the
+/// background pass calls this on every sync tick.
 fn threads_needing_scan(
     state: &State<'_, AppState>,
     account_id: Option<i64>,
+    limit: Option<u32>,
 ) -> Result<Vec<meetings::ThreadToScan>, String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
 
@@ -2487,12 +2492,15 @@ fn threads_needing_scan(
              GROUP BY e.account_id, e.gmail_thread_id
              HAVING ts.scanned_message_count IS NULL
                  OR ts.scanned_message_count != COUNT(e.id)
-             ORDER BY MAX(e.received_at) DESC",
+             ORDER BY MAX(e.received_at) DESC
+             LIMIT ?2",
         )
         .map_err(|e| e.to_string())?;
 
+    // -1 is SQLite's "no limit".
+    let sql_limit: i64 = limit.map(|l| l as i64).unwrap_or(-1);
     let heads = stmt
-        .query_map(params![account_id], |row| {
+        .query_map(params![account_id, sql_limit], |row| {
             Ok((
                 row.get::<_, i64>(0)?,
                 row.get::<_, String>(1)?,
@@ -2549,6 +2557,7 @@ pub async fn scan_meetings(
     state: State<'_, AppState>,
     account_id: Option<i64>,
     stop_after: Option<u32>,
+    max_threads: Option<u32>,
 ) -> Result<u32, String> {
     let handle = {
         let slot = state.triage_llm.lock().map_err(|e| e.to_string())?;
@@ -2557,7 +2566,10 @@ pub async fn scan_meetings(
 
     // Newest threads first (see the ORDER BY), so an early stop returns the meetings most
     // likely to still be ahead of the user rather than whatever is oldest.
-    let threads = threads_needing_scan(&state, account_id)?;
+    // Bound the work per run. The background pass calls this every sync; without a cap the
+    // first run would grind through the whole backlog (hundreds of threads, tens of seconds
+    // each) and never finish. Newest-first ordering means the cap keeps the most relevant.
+    let threads = threads_needing_scan(&state, account_id, max_threads)?;
     let total = threads.len() as u32;
     let today = chrono::Local::now().format("%Y-%m-%d").to_string();
 

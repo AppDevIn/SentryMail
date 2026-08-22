@@ -108,6 +108,10 @@ function App() {
     return new Date(now.getFullYear(), now.getMonth(), 1);
   });
   const [scanningMeetings, setScanningMeetings] = useState(false);
+  // Read inside autoSync, which is bound to an interval and must not re-arm on every change.
+  const modelReadyRef = useRef(false);
+  const calendarMonthRef = useRef<Date>(new Date());
+  const scanningRef = useRef(false);
   const [meetingScanProgress, setMeetingScanProgress] = useState<
     { done: number; total: number; found: number } | null
   >(null);
@@ -399,12 +403,20 @@ function App() {
   // for hours. Stop after a handful: every scanned thread is recorded, so pressing Scan
   // again resumes with the threads not yet looked at rather than repeating work.
   const MEETING_SCAN_BATCH = 5;
+  // Also bound how many threads a manual scan loads. stop_after ends the loop early, but
+  // without this the query would still pull every unscanned thread's message bodies into
+  // memory before the first inference even starts.
+  const MEETING_SCAN_MAX_THREADS = 40;
 
   const doScanMeetings = () =>
     withBusy(async () => {
       setScanningMeetings(true);
       try {
-        const found = await api.scanMeetings(selectedAccountId ?? undefined, MEETING_SCAN_BATCH);
+        const found = await api.scanMeetings(
+          selectedAccountId ?? undefined,
+          MEETING_SCAN_BATCH,
+          MEETING_SCAN_MAX_THREADS,
+        );
         await refreshMeetings(calendarMonth, selectedAccountId);
         setNotice(
           found === 0
@@ -448,6 +460,14 @@ function App() {
     (selectedEmailId && emails.find((e) => e.id === selectedEmailId)) || (selectedEmailId ? extraEmails[selectedEmailId] ?? null : null);
   const selectedTriage = selectedEmailId ? triageByEmail[selectedEmailId] ?? null : null;
   const modelReady = modelStatus.state === "ready";
+  // Mirror into refs: autoSync is bound to a 5-minute interval and closes over its deps, so it
+  // would otherwise keep reading whatever these were when the timer was armed.
+  useEffect(() => {
+    modelReadyRef.current = modelReady;
+  }, [modelReady]);
+  useEffect(() => {
+    calendarMonthRef.current = calendarMonth;
+  }, [calendarMonth]);
 
   // Opening a thread runs analysis (once per email per session) when the model is ready.
   useEffect(() => {
@@ -522,6 +542,11 @@ function App() {
       }
     });
 
+  // How many threads the background pass will scan per sync tick. Each one costs a full
+  // on-device inference (tens of seconds on CPU), so this is deliberately small: the aim is to
+  // keep up with new mail and drain the backlog gradually, not to race through the inbox.
+  const AUTO_SCAN_THREADS_PER_TICK = 3;
+
   // Quiet background sync: on launch (once accounts are known) and every AUTO_SYNC_MS.
   const autoSync = useCallback(async () => {
     if (syncingRef.current || accounts.length === 0) return;
@@ -536,7 +561,26 @@ function App() {
     } finally {
       syncingRef.current = false;
     }
-  }, [accounts.length, selectedAccountId, refreshEmails]);
+
+    // Meetings ride along with the sync the user already has running, so the calendar fills in
+    // on its own. Only possible once the model is loaded; silently skipped otherwise, since a
+    // background task must not nag. Failures stay quiet for the same reason - the explicit
+    // "Scan mail" button is where errors belong.
+    if (!modelReadyRef.current || scanningRef.current) return;
+    scanningRef.current = true;
+    try {
+      const found = await api.scanMeetings(
+        selectedAccountId ?? undefined,
+        undefined,
+        AUTO_SCAN_THREADS_PER_TICK,
+      );
+      if (found > 0) await refreshMeetings(calendarMonthRef.current, selectedAccountId);
+    } catch {
+      // ignored on purpose - see above
+    } finally {
+      scanningRef.current = false;
+    }
+  }, [accounts.length, selectedAccountId, refreshEmails, refreshMeetings]);
 
   useEffect(() => {
     if (accounts.length === 0) return;

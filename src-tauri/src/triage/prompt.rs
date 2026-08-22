@@ -367,8 +367,15 @@ const MEETING_INSTRUCTIONS: &str = r#"You are a private, fully on-device assista
 
 Set kind to exactly one of:
 - "confirmed": the thread contains a real joinable meeting link (Google Meet, Zoom, Teams, Webex, Whereby) AND a time.
-- "possible": no link, but the user AND the other person have BOTH agreed on a time. One side proposing a time is NOT enough - look for the other side accepting it.
-- "none": no meeting, or only a vague intention ("let's catch up sometime", "I'll send times later").
+- "possible": a specific time is settled, in either of these ways:
+  (a) the user AND the other person BOTH agreed on it in this thread - one side proposing a time
+      is NOT enough, look for the other side accepting it; or
+  (b) the message refers to a meeting as ALREADY arranged, even though the agreement itself
+      happened somewhere else and is not shown here. Phrases like "we were scheduled to meet at
+      2 PM", "our 3pm today", "before our call at 10", "running late for our meeting" all mean a
+      real meeting exists - treat these as settled, do not require to see it being agreed.
+- "none": no meeting, or only a vague intention ("let's catch up sometime", "I'll send times
+  later", "we should meet up") where no specific time is named.
 
 Set has_meeting to false when kind is "none".
 

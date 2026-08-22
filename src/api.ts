@@ -144,10 +144,11 @@ export const api = {
   /** Re-scans threads whose meeting data is stale. One inference per changed thread. */
   /** Returns the number of meetings found. `stopAfter` ends the run early once that many
    *  are found; scanned threads are recorded, so a later call resumes where it stopped. */
-  scanMeetings: (accountId?: number, stopAfter?: number) =>
+  scanMeetings: (accountId?: number, stopAfter?: number, maxThreads?: number) =>
     invoke<number>("scan_meetings", {
       accountId: accountId ?? null,
       stopAfter: stopAfter ?? null,
+      maxThreads: maxThreads ?? null,
     }),
   /** Meetings starting in [from, to) - the visible month. Excludes dismissed ones. */
   listMeetings: (from: string, to: string, accountId?: number) =>
