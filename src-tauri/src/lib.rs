@@ -61,6 +61,7 @@ pub fn run() {
             commands::list_thread_messages,
             commands::list_attachments,
             commands::open_attachment,
+            commands::attachment_bytes,
             commands::inline_images,
             commands::fetch_remote_images,
             commands::sync_now,

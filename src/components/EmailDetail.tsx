@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { EmailDto, LabelDto, LabelSuggestion, Risk, TriageResult } from "../types";
+import type { AttachmentDto, EmailDto, LabelDto, LabelSuggestion, Risk, TriageResult } from "../types";
 import { api } from "../api";
 import { MetaTag, typeLabel } from "./Badge";
 import { ChevronDownIcon, PlusIcon, ShieldAlertIcon, SparklesIcon } from "./icons";
@@ -41,6 +41,9 @@ interface EmailDetailProps {
   onSuggestLabels: (emailId: number) => Promise<LabelSuggestion[]>;
   onSendReply: (emailId: number, body: string, replyAll: boolean) => Promise<void>;
   onDraftWithAi: (emailId: number, instructions?: string, previousDraft?: string) => Promise<string>;
+  onPreviewAttachment: (attachment: AttachmentDto) => void;
+  /** True while the attachment preview covers this view: keeps Escape from reaching the inbox. */
+  suspended: boolean;
 }
 
 /** UI word for a risk value: "clean" for safe (ADR 0012). */
@@ -251,6 +254,8 @@ export function EmailDetail({
   onSuggestLabels,
   onSendReply,
   onDraftWithAi,
+  onPreviewAttachment,
+  suspended,
 }: EmailDetailProps) {
   const [labelBusy, setLabelBusy] = useState(false);
   const [labelError, setLabelError] = useState<string | null>(null);
@@ -306,7 +311,10 @@ export function EmailDetail({
   }, [email.id]);
 
   // Escape closes the reading pane (unless focus is in a field, where Esc just blurs it).
+  // While the attachment preview is up it owns Escape, so this listener stands down - otherwise
+  // one press would close the preview *and* the thread behind it.
   useEffect(() => {
+    if (suspended) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
       if (document.activeElement instanceof HTMLTextAreaElement || document.activeElement instanceof HTMLInputElement) {
@@ -321,7 +329,7 @@ export function EmailDetail({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose, verdictOpen]);
+  }, [onClose, verdictOpen, suspended]);
 
   const sender = parseSender(email.sender);
 
@@ -359,7 +367,9 @@ export function EmailDetail({
         preview: previewLine(newest),
         summaryText: newest,
         source: "stored",
-        renderExpanded: () => <MessageBody email={m} risk={null} compact onOpenLink={(url) => api.openExternal(url)} />,
+        renderExpanded: () => (
+          <MessageBody email={m} risk={null} compact onOpenLink={(url) => api.openExternal(url)} onPreviewAttachment={onPreviewAttachment} />
+        ),
       };
     });
     const gaps: ThreadItem[] = quotedMsgs
@@ -391,8 +401,7 @@ export function EmailDetail({
         };
       });
     return [...stored, ...gaps].sort((a, b) => (b.ts ?? -Infinity) - (a.ts ?? -Infinity));
-  }, [email.body_text, storedThread]);
-
+  }, [email.body_text, storedThread, onPreviewAttachment]);
   const toList = parseAddressList(email.to_addrs);
   const ccList = parseAddressList(email.cc_addrs);
   const addressing = addressingFor(email, userEmail);
@@ -702,7 +711,7 @@ export function EmailDetail({
           </section>
         )}
 
-        <MessageBody email={email} risk={risk} onOpenLink={(url) => api.openExternal(url)} />
+        <MessageBody email={email} risk={risk} onOpenLink={(url) => api.openExternal(url)} onPreviewAttachment={onPreviewAttachment} />
 
         {!analyzing && canReply && !reply && (
           <div className="reply-footer">

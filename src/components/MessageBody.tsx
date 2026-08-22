@@ -1,13 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { AttachmentDto, EmailDto, InlineImageDto, RemoteImageDto, SkippedInlineImageDto, Risk } from "../types";
 import { api } from "../api";
-import { cleanUrl, linkLabel, splitQuotedHistory } from "../format";
-
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-}
+import { cleanUrl, formatSize, linkLabel, splitQuotedHistory } from "../format";
 
 /** Swaps `src="cid:…"` references for data URIs of the message's own inline images. */
 function inlineCidImages(html: string, images: InlineImageDto[]): string {
@@ -123,6 +117,11 @@ interface MessageBodyProps {
   /** Compact variant for thread cards: no END OF MESSAGE line, lighter toolbar. */
   compact?: boolean;
   onOpenLink: (url: string) => Promise<void> | void;
+  /**
+   * Opens the attachment in the in-app preview pane. When omitted the chip falls back to
+   * handing the file to the system's default app, so this component stays usable standalone.
+   */
+  onPreviewAttachment?: (attachment: AttachmentDto) => void;
 }
 
 const URL_RE = /(https?:\/\/[^\s<>"')\]]+)/g;
@@ -584,7 +583,7 @@ function PlainText({
   );
 }
 
-export function MessageBody({ email, risk, compact = false, onOpenLink }: MessageBodyProps) {
+export function MessageBody({ email, risk, compact = false, onOpenLink, onPreviewAttachment }: MessageBodyProps) {
   const hasHtml = !!email.body_html && email.body_html.trim().length > 0;
   const linksDisabled = risk === "danger";
   const [mode, setMode] = useState<"html" | "text">(hasHtml ? "html" : "text");
@@ -693,6 +692,12 @@ export function MessageBody({ email, risk, compact = false, onOpenLink }: Messag
     return !shownCids.has(a.content_id);
   });
   const openAttachment = async (a: AttachmentDto) => {
+    // The in-app preview renders in a script-less worker, which is strictly safer than handing
+    // the file to the OS - so it stays available even on mail triaged as danger.
+    if (onPreviewAttachment) {
+      onPreviewAttachment(a);
+      return;
+    }
     if (linksDisabled) return;
     setOpening(a.attachment_id);
     setAttachError(null);
@@ -841,7 +846,7 @@ export function MessageBody({ email, risk, compact = false, onOpenLink }: Messag
         <div className="attachments">
           <span className="attachments-label">
             {files.length} {files.length === 1 ? "attachment" : "attachments"}
-            {linksDisabled ? " · opening disabled for this email" : ""}
+            {linksDisabled && !onPreviewAttachment ? " · opening disabled for this email" : ""}
           </span>
           {skippedInline.length > 0 && (
             <p className="images-note">
@@ -856,8 +861,8 @@ export function MessageBody({ email, risk, compact = false, onOpenLink }: Messag
                 key={a.id}
                 type="button"
                 className="attachment-chip"
-                disabled={linksDisabled || opening !== null}
-                title={`${a.filename} · ${a.mime_type}`}
+                disabled={(linksDisabled && !onPreviewAttachment) || opening !== null}
+                title={`${a.filename} — ${formatSize(a.size)}`}
                 onClick={() => void openAttachment(a)}
               >
                 <span className="attachment-name">{a.filename}</span>

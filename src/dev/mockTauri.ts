@@ -282,6 +282,38 @@ const triage: Record<number, TriageResult> = {
   },
 };
 
+/**
+ * Attachment fixtures for the in-app preview. The PDFs are real, valid, minimal documents
+ * (uncompressed, Helvetica) rather than stubs - that is what makes the screenshot harness
+ * exercise the actual pdf.js renderer, worker and wasm assets instead of proving nothing.
+ */
+function bytesFromBase64(b64: string): ArrayBuffer {
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out.buffer;
+}
+
+const MOCK_ATTACHMENT_BYTES: Record<string, ArrayBuffer> = {
+  "att-1": bytesFromBase64(
+    "JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFs0IDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL0ZvbnQgL1N1YnR5cGUgL1R5cGUxIC9CYXNlRm9udCAvSGVsdmV0aWNhID4+CmVuZG9iago0IDAgb2JqCjw8IC9UeXBlIC9QYWdlIC9QYXJlbnQgMiAwIFIgL01lZGlhQm94IFswIDAgNjEyIDc5Ml0gL1Jlc291cmNlcyA8PCAvRm9udCA8PCAvRjEgMyAwIFIgPj4gPj4gL0NvbnRlbnRzIDUgMCBSID4+CmVuZG9iago1IDAgb2JqCjw8IC9MZW5ndGggMTA0ID4+CnN0cmVhbQpCVCAvRjEgMTggVGYgNzIgNzAwIFRkIChGSVhUVVJFIC0gbm90IGEgcmVhbCBkb2N1bWVudCkgVGogRVQKQlQgL0YxIDExIFRmIDcyIDY2MCBUZCAoUGFnZSAxIG9mIDEpIFRqIEVUCmVuZHN0cmVhbQplbmRvYmoKeHJlZgowIDYKMDAwMDAwMDAwMCA2NTUzNSBmIAowMDAwMDAwMDA5IDAwMDAwIG4gCjAwMDAwMDAwNTggMDAwMDAgbiAKMDAwMDAwMDExNSAwMDAwMCBuIAowMDAwMDAwMTg1IDAwMDAwIG4gCjAwMDAwMDAzMTEgMDAwMDAgbiAKdHJhaWxlcgo8PCAvU2l6ZSA2IC9Sb290IDEgMCBSID4+CnN0YXJ0eHJlZgo0NjUKJSVFT0YK",
+  ),
+  "att-3": bytesFromBase64(
+    "JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFs0IDAgUiA2IDAgUiA4IDAgUl0gL0NvdW50IDMgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL0ZvbnQgL1N1YnR5cGUgL1R5cGUxIC9CYXNlRm9udCAvSGVsdmV0aWNhID4+CmVuZG9iago0IDAgb2JqCjw8IC9UeXBlIC9QYWdlIC9QYXJlbnQgMiAwIFIgL01lZGlhQm94IFswIDAgNjEyIDc5Ml0gL1Jlc291cmNlcyA8PCAvRm9udCA8PCAvRjEgMyAwIFIgPj4gPj4gL0NvbnRlbnRzIDUgMCBSID4+CmVuZG9iago1IDAgb2JqCjw8IC9MZW5ndGggOTggPj4Kc3RyZWFtCkJUIC9GMSAxOCBUZiA3MiA3MDAgVGQgKEZJWFRVUkUgLSBtZWV0aW5nIG5vdGVzKSBUaiBFVApCVCAvRjEgMTEgVGYgNzIgNjYwIFRkIChQYWdlIDEgb2YgMykgVGogRVQKZW5kc3RyZWFtCmVuZG9iago2IDAgb2JqCjw8IC9UeXBlIC9QYWdlIC9QYXJlbnQgMiAwIFIgL01lZGlhQm94IFswIDAgNjEyIDc5Ml0gL1Jlc291cmNlcyA8PCAvRm9udCA8PCAvRjEgMyAwIFIgPj4gPj4gL0NvbnRlbnRzIDcgMCBSID4+CmVuZG9iago3IDAgb2JqCjw8IC9MZW5ndGggOTcgPj4Kc3RyZWFtCkJUIC9GMSAxOCBUZiA3MiA3MDAgVGQgKEZJWFRVUkUgLSBhY3Rpb24gaXRlbXMpIFRqIEVUCkJUIC9GMSAxMSBUZiA3MiA2NjAgVGQgKFBhZ2UgMiBvZiAzKSBUaiBFVAplbmRzdHJlYW0KZW5kb2JqCjggMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCA2MTIgNzkyXSAvUmVzb3VyY2VzIDw8IC9Gb250IDw8IC9GMSAzIDAgUiA+PiA+PiAvQ29udGVudHMgOSAwIFIgPj4KZW5kb2JqCjkgMCBvYmoKPDwgL0xlbmd0aCA5NSA+PgpzdHJlYW0KQlQgL0YxIDE4IFRmIDcyIDcwMCBUZCAoRklYVFVSRSAtIG5leHQgc3RlcHMpIFRqIEVUCkJUIC9GMSAxMSBUZiA3MiA2NjAgVGQgKFBhZ2UgMyBvZiAzKSBUaiBFVAplbmRzdHJlYW0KZW5kb2JqCnhyZWYKMCAxMAowMDAwMDAwMDAwIDY1NTM1IGYgCjAwMDAwMDAwMDkgMDAwMDAgbiAKMDAwMDAwMDA1OCAwMDAwMCBuIAowMDAwMDAwMTI3IDAwMDAwIG4gCjAwMDAwMDAxOTcgMDAwMDAgbiAKMDAwMDAwMDMyMyAwMDAwMCBuIAowMDAwMDAwNDcwIDAwMDAwIG4gCjAwMDAwMDA1OTYgMDAwMDAgbiAKMDAwMDAwMDc0MiAwMDAwMCBuIAowMDAwMDAwODY4IDAwMDAwIG4gCnRyYWlsZXIKPDwgL1NpemUgMTAgL1Jvb3QgMSAwIFIgPj4Kc3RhcnR4cmVmCjEwMTIKJSVFT0YK",
+  ),
+  "att-4": bytesFromBase64(
+    "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",
+  ),
+  // Deliberately not a real PNG - the decode must fail so the fallback card is reachable.
+  "att-10": bytesFromBase64("bm90LWFuLWltYWdl"),
+  "att-9": bytesFromBase64(
+    "JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFs0IDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL0ZvbnQgL1N1YnR5cGUgL1R5cGUxIC9CYXNlRm9udCAvSGVsdmV0aWNhID4+CmVuZG9iago0IDAgb2JqCjw8IC9UeXBlIC9QYWdlIC9QYXJlbnQgMiAwIFIgL01lZGlhQm94IFswIDAgNjEyIDc5Ml0gL1Jlc291cmNlcyA8PCAvRm9udCA8PCAvRjEgMyAwIFIgPj4gPj4gL0NvbnRlbnRzIDUgMCBSID4+CmVuZG9iago1IDAgb2JqCjw8IC9MZW5ndGggMTA0ID4+CnN0cmVhbQpCVCAvRjEgMTggVGYgNzIgNzAwIFRkIChGSVhUVVJFIC0gbm90IGEgcmVhbCBkb2N1bWVudCkgVGogRVQKQlQgL0YxIDExIFRmIDcyIDY2MCBUZCAoUGFnZSAxIG9mIDEpIFRqIEVUCmVuZHN0cmVhbQplbmRvYmoKeHJlZgowIDYKMDAwMDAwMDAwMCA2NTUzNSBmIAowMDAwMDAwMDA5IDAwMDAwIG4gCjAwMDAwMDAwNTggMDAwMDAgbiAKMDAwMDAwMDExNSAwMDAwMCBuIAowMDAwMDAwMTg1IDAwMDAwIG4gCjAwMDAwMDAzMTEgMDAwMDAgbiAKdHJhaWxlcgo8PCAvU2l6ZSA2IC9Sb290IDEgMCBSID4+CnN0YXJ0eHJlZgo0NjUKJSVFT0YK",
+  ),
+  "att-8": bytesFromBase64(
+    "iVBORw0KGgoAAAANSUhEUgAAAZAAAAEECAIAAACJKvXOAAAGdElEQVR42u3doW1DARQEwWsmlbnzIEshLiElfPIMVhrp8IBrYPf7/jzu5/X3OA6Hw/m2My9wOJyKMy9wOJyKMy9wOJyKMy9wOJyKMy9wOJyKMy9wOJyKMy9wOJyKMy9wOJyKMy9wOJyKMy9wOJyKMy9wOJyKMy9wOJyKMy9wOJyKMy9wOJyKMy9wOJyKMy9wOJyKMy9wOJyKMy9wOJyKMy9wOJyKMy9wOJyKMy9wOJyKMy9wOJyKMy9wOJyKMy9wOJyKo0vI4XAyji4hh8PJOLqEHA4n4+gScjgcXUIOh8O5dnQJORxOxtEl5HA4GUeXkMPhZBxdQg6Hk3F0CTkcTsbRJeRwOBlHl5DD4WQcXUIOh5NxdAk5HE7G0SXkcDgZR5eQw+HoEnI4HM61o0vI4XAyji4hh8PJOLqEHA4n4+gScjicjKNLyOFwMo4uIYfDyTi6hBwOJ+PoEnI4nIyjS8jhcDKOLiGHw8k4uoQcDkeXkMPhcK4dXUIOh5NxdAk5HE7G0SXkcDgZR5eQw+FkHF1CDoeTcXQJORxOxtEl5HA4GUeXkMPhZBxdQg6Hk3F0CTkcTsbRJeRwOLqEHA6Hc+3oEnI4nIyjS8jhcDKOLiGHw8k4uoQcDifj6BJyOJyMo0vI4XAyji4hh8PJOLqEHA4n4+gScjicjKNLyOFwMo4uIYfD0SXkcDica0eXkMPhZBxdQg6Hk3F0CTkcTsbRJeRwOBlHl5DD4WQcXUIOh5NxdAk5HE7G0SXkcDgZR5eQw+FkHF1CDoeTcXQJORyOLiGHw+FcO7qEHA4n4+gScjicjKNLyOFwMo4uIYfDyTi6hBwOJ+PoEnI4nIyjS8jhcDKOLiGHw8k4uoQcDifj6BJyOJyMo0vI4XB0CTkcDufa0SXkcDgZR5eQw+FkHF1CDoeTcXQJORxOxtEl5HA4GUeXkMPhZBxdQg6Hk3F0CTkcTsbRJeRwOBlHl5DD4WQcXUIOh6NLyOFwONeOLiGHw8k4uoQcDifj6BJyOJyMo0vI4XAyji4hh8PJOLqEHA4n4+gScjicjKNLyOFwMo4uIYfDyTi6hBwOJ+PoEnI4HF1CDofDuXZ0CTkcTsbRJeRwOBlHl5DD4WQcXUIOh5NxdAk5HE7G0SXkcDgZR5eQw+FkHF1CDoeTcXQJORxOxtEl5HA4GUeXkMPh6BJyOBzOtaNLyOFwMo4uIYfDyTi6hBwOJ+PoEnI4nIyjS8jhcDKOLiGHw8k4uoQcDifj6BJyOJyMo0vI4XAyji4hh8PJOLqEHA5Hl5DD4XCuHV1CDoeTcXQJORxOxtEl5HA4GUeXkMPhZBxdQg6Hk3F0CTkcTsbRJeRwOBlHl5DD4WQcXUIOh5NxdAk5HE7G0SXkcDi6hBwOh3Pt6BJyOJyMo0vI4XAyji4hh8PJOLqEHA4n4+gScjicjKNLyOFwMo4uIYfDyTi6hBwOJ+PoEnI4nIyjS8jhcDKOLiGHw9El5HA4nGtHl5DD4WQcXUIOh5NxdAk5HE7G0SXkcDgZR5eQw+FkHF1CDoeTcXQJORxOxtEl5HA4GUeXkMPhZBxdQg6Hk3F0CTkcji4hh8PhXDu6hBwOJ+PoEnI4nIyjS8jhcDKOLiGHw8k4uoQcDifj6BJyOJyMo0vI4XAyji4hh8PJOLqEHA4n4+gScjicjKNLyOFwdAk5HA7n2tEl5HA4GUeXkMPhZBxdQg6Hk3F0CTkcTsbRJeRwOBlHl5DD4WQcXUIOh5NxdAk5HE7G0SXkcDgZR5eQw+FkHF1CDoejS8jhcDjXji4hh8PJOLqEHA4n4+gScjicjKNLyOFwMo4uIYfDyTi6hBwOJ+PoEnI4nIyjS8jhcDKOLiGHw8k4uoQcDifj6BJyOBxdQg6Hw7l2dAk5HE7G0SXkcDgZR5eQw+FkHF1CDoeTcXQJORxOxtEl5HA4GUeXkMPhZBxdQg6Hk3F0CTkcTsbRJeRwOBlHl5DD4egScjgczrWjS8jhcDKOLiGHw8k4uoQcDifj6BJyOJyMo0vI4XAyji4hh8PJOLqEHA4n4+gScjicjKNLyOFwMo4uIYfDyTi6hBwOR5eQw+Fwrh1dQg6Hk3F0CTkcTsbRJeRwOBlHl5DD4WQcXUIOh5NxdAk5HE7G0SXkcDgZR5eQw+FkHF1CDoeTcXQJORxOxtEl5HA4uoQcDodz7egScjicjKNLyOFwMs4/8xRR4bsg768AAAAASUVORK5CYII=",
+  ),
+};
+
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const threadOf = (e: EmailDto) => emails.filter((x) => x.account_id === e.account_id && x.gmail_thread_id === e.gmail_thread_id);
@@ -457,10 +489,22 @@ window.__TAURI_INTERNALS__ = {
       case "list_attachments":
         if (args.emailId === 4)
           return [
-            { id: 1, attachment_id: "att-1", filename: "Countersigned-Agreement.pdf", mime_type: "application/pdf", size: 182340, content_id: null, is_inline: false },
+            { id: 1, attachment_id: "att-1", filename: "Countersigned-Agreement.pdf", mime_type: "application/pdf", size: MOCK_ATTACHMENT_BYTES["att-1"].byteLength, content_id: null, is_inline: false },
+            { id: 3, attachment_id: "att-3", filename: "Meeting-notes.pdf", mime_type: "application/pdf", size: MOCK_ATTACHMENT_BYTES["att-3"].byteLength, content_id: null, is_inline: false },
+            { id: 4, attachment_id: "att-4", filename: "site-photo.png", mime_type: "image/png", size: MOCK_ATTACHMENT_BYTES["att-4"].byteLength, content_id: null, is_inline: false },
+            // Exercises the out-of-scope graceful fallback (spreadsheets are a later phase).
+            // Valid mime, undecodable bytes: exercises the <img onError> fallback.
+            { id: 10, attachment_id: "att-10", filename: "broken-photo.png", mime_type: "image/png", size: 12, content_id: null, is_inline: false },
+            { id: 5, attachment_id: "att-5", filename: "quarterly-numbers.xlsx", mime_type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", size: 51200, content_id: null, is_inline: false },
+            // Over the 25 MB preview limit: refused on size alone, so no bytes are ever needed.
+            { id: 6, attachment_id: "att-6", filename: "Full-Case-File.pdf", mime_type: "application/pdf", size: 41_000_000, content_id: null, is_inline: false },
           ];
         if (args.emailId === 1)
-          return [{ id: 2, attachment_id: "att-2", filename: "logo.png", mime_type: "image/png", size: 68, content_id: "logo123", is_inline: true }];
+          return [
+            { id: 2, attachment_id: "att-2", filename: "logo.png", mime_type: "image/png", size: 68, content_id: "logo123", is_inline: true },
+            // On a danger-rated email: previewing in-app is fine, handing it to the OS is not.
+            { id: 9, attachment_id: "att-9", filename: "Account-Verification.pdf", mime_type: "application/pdf", size: MOCK_ATTACHMENT_BYTES["att-1"].byteLength, content_id: null, is_inline: false },
+          ];
         if (args.emailId === 10)
           return [
             // Referenced by the HTML, but skipped for size - the chip is the only way to reach it.
@@ -473,6 +517,14 @@ window.__TAURI_INTERNALS__ = {
         await delay(400);
         console.info("[mock] open_attachment", args);
         return "/tmp/mock";
+      case "attachment_bytes": {
+        await delay(250);
+        const buf = MOCK_ATTACHMENT_BYTES[String(args.attachmentId)];
+        if (!buf) throw "We couldn't download that file.";
+        // An ArrayBuffer, matching what tauri::ipc::Response delivers, so the frontend code
+        // path is byte-identical between the mock and the real backend.
+        return buf;
+      }
       case "inline_images":
         if (args.emailId === 1)
           return {
@@ -633,5 +685,6 @@ window.__TAURI_INTERNALS__ = {
 // Newer @tauri-apps/api routes unlisten through its own internals object. Without this every
 // listen() cleanup throws, React unmounts the tree, and the page renders blank.
 window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => {} };
+
 
 export {};

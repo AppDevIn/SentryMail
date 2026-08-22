@@ -4,6 +4,7 @@ import { api } from "./api";
 import type {
   AccountDto,
   ApiFolder,
+  AttachmentDto,
   EmailCounts,
   EmailDto,
   Folder,
@@ -24,6 +25,7 @@ import { EmailDetail } from "./components/EmailDetail";
 import { Compose } from "./components/Compose";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { CalendarMonth } from "./components/CalendarMonth";
+import { AttachmentPreview } from "./components/AttachmentPreview";
 import "./App.css";
 
 const PAGE_SIZE = 100;
@@ -62,6 +64,9 @@ function App() {
   const [extraEmails, setExtraEmails] = useState<Record<number, EmailDto>>({});
   const [triageByEmail, setTriageByEmail] = useState<Record<number, TriageResult>>({});
   const [pane, setPane] = useState<Pane>({ kind: "empty" });
+  // The attachment preview covers the reading pane. It lives here, not in EmailDetail, because
+  // the pane belongs to App while the click that opens it starts three levels down.
+  const [preview, setPreview] = useState<{ emailId: number; attachment: AttachmentDto } | null>(null);
   const [folder, setFolder] = useState<Folder>("inbox");
   const folderRef = useRef<Folder>("inbox");
   folderRef.current = folder;
@@ -208,6 +213,11 @@ function App() {
   }, [syncProgress, selectedAccountId, refreshEmails]);
 
   const selectedEmailId = pane.kind === "thread" ? pane.emailId : null;
+  // Navigating to another message (or closing the pane) drops the preview, so you can never
+  // return from it into a conversation you have already left.
+  useEffect(() => {
+    setPreview(null);
+  }, [selectedEmailId]);
 
   // Search results can reference emails outside the loaded window; fetch on demand.
   useEffect(() => {
@@ -683,6 +693,17 @@ function App() {
               </div>
             )}
 
+            {preview && selectedEmail && (
+              <AttachmentPreview
+                key={`${preview.emailId}:${preview.attachment.attachment_id}`}
+                emailId={preview.emailId}
+                attachment={preview.attachment}
+                emailSubject={selectedEmail.subject}
+                allowExternalOpen={effectiveRisk(selectedTriage) !== "danger"}
+                onBack={() => setPreview(null)}
+              />
+            )}
+            <div className={preview ? "pane is-hidden" : "pane"}>
             {pane.kind === "compose" ? (
               <Compose
                 accounts={accounts}
@@ -732,6 +753,8 @@ function App() {
                   await api.createGmailDraft(emailId, body, replyAll, true);
                 }}
                 onDraftWithAi={(emailId, instructions, previousDraft) => api.draftReply(emailId, instructions, previousDraft)}
+                onPreviewAttachment={(attachment) => setPreview({ emailId: selectedEmail.id, attachment })}
+                suspended={preview !== null}
               />
             ) : (
               <div className="pane-empty sm-fade">
@@ -745,6 +768,7 @@ function App() {
                 )}
               </div>
             )}
+            </div>
           </main>
         )}
         </>

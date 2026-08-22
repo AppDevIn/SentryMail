@@ -95,6 +95,9 @@ export const api = {
   /** Downloads the attachment to the app cache and opens it with the default app. */
   openAttachment: (emailId: number, attachmentId: string) =>
     invoke<string>("open_attachment", { emailId, attachmentId }),
+  /** Raw attachment bytes for the in-app preview. Never written to disk; rejects over 25 MB. */
+  attachmentBytes: (emailId: number, attachmentId: string) =>
+    invoke<ArrayBuffer>("attachment_bytes", { emailId, attachmentId }),
   /** Inline (cid:) images as data URIs for the sandboxed HTML view, plus any we skipped. */
   inlineImages: (emailId: number) => invoke<InlineImagesDto>("inline_images", { emailId }),
   /**

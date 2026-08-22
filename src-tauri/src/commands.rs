@@ -510,6 +510,52 @@ fn safe_filename(name: &str) -> String {
     if trimmed.is_empty() { "attachment".to_string() } else { trimmed.to_string() }
 }
 
+/// Largest attachment we will render in the in-app preview. Gmail's own send limit is 25 MB,
+/// so this covers everything that can realistically arrive by mail. Distinct from the
+/// inline-image budget below, which is an *aggregate* cap across every image inlined into one
+/// HTML string.
+const MAX_PREVIEW_BYTES: usize = 25 * 1024 * 1024;
+
+/// Downloads one attachment's bytes from Gmail, along with the filename and MIME type recorded
+/// for it at sync time. Shared by the "open with the default app" and in-app preview paths.
+async fn fetch_attachment(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    email_id: i64,
+    attachment_id: &str,
+) -> Result<(String, String, Vec<u8>), String> {
+    let (filename, mime_type): (String, String) = {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        db.query_row(
+            "SELECT filename, mime_type FROM attachments WHERE email_id = ?1 AND attachment_id = ?2",
+            params![email_id, attachment_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|_| "We couldn't find that attachment.".to_string())?
+    };
+    let (client, gmail_message_id) = gmail_client_for_email(app, state, email_id).await?;
+    let bytes = client
+        .get_attachment(&gmail_message_id, attachment_id)
+        .await
+        .map_err(|e| format!("We couldn't download that file. ({e})"))?;
+    Ok((filename, mime_type, bytes))
+}
+
+/// Writes attachment bytes into the app's cache folder and returns the path. Only the
+/// "open with the system app" path needs this; the in-app preview never touches disk.
+fn cache_attachment(app: &AppHandle, email_id: i64, filename: &str, bytes: &[u8]) -> Result<std::path::PathBuf, String> {
+    let dir = app
+        .path()
+        .app_cache_dir()
+        .map_err(|e| e.to_string())?
+        .join("attachments")
+        .join(email_id.to_string());
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = dir.join(safe_filename(filename));
+    std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+    Ok(path)
+}
+
 /// Downloads an attachment to the app's cache folder and opens it with the default app.
 #[tauri::command]
 pub async fn open_attachment(
@@ -519,30 +565,51 @@ pub async fn open_attachment(
     attachment_id: String,
 ) -> Result<String, String> {
     use tauri_plugin_opener::OpenerExt;
-    let filename: String = {
-        let db = state.db.lock().map_err(|e| e.to_string())?;
-        db.query_row(
-            "SELECT filename FROM attachments WHERE email_id = ?1 AND attachment_id = ?2",
-            params![email_id, attachment_id],
-            |row| row.get(0),
-        )
-        .map_err(|_| "attachment not found".to_string())?
-    };
-    let (client, gmail_message_id) = gmail_client_for_email(&app, &state, email_id).await?;
-    let bytes = client.get_attachment(&gmail_message_id, &attachment_id).await?;
-    let dir = app
-        .path()
-        .app_cache_dir()
-        .map_err(|e| e.to_string())?
-        .join("attachments")
-        .join(email_id.to_string());
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let path = dir.join(safe_filename(&filename));
-    std::fs::write(&path, &bytes).map_err(|e| e.to_string())?;
+    let (filename, _mime_type, bytes) = fetch_attachment(&app, &state, email_id, &attachment_id).await?;
+    let path = cache_attachment(&app, email_id, &filename, &bytes)?;
     app.opener()
         .open_path(path.to_string_lossy().to_string(), None::<&str>)
         .map_err(|e| format!("could not open file: {e}"))?;
     Ok(path.to_string_lossy().to_string())
+}
+
+/// Raw attachment bytes for the in-app preview, delivered as an ArrayBuffer rather than base64
+/// (the preview renders into a real DOM, so it has no need for a `data:` URI). Nothing is
+/// written to disk on this path - only the explicit "open with my computer's app" fallback caches.
+#[tauri::command]
+pub async fn attachment_bytes(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    email_id: i64,
+    attachment_id: String,
+) -> Result<tauri::ipc::Response, String> {
+    // Refuse on the recorded size before spending a Gmail round trip on it.
+    let size: i64 = {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        db.query_row(
+            "SELECT size FROM attachments WHERE email_id = ?1 AND attachment_id = ?2",
+            params![email_id, attachment_id],
+            |row| row.get(0),
+        )
+        .map_err(|_| "We couldn't find that attachment.".to_string())?
+    };
+    if size > MAX_PREVIEW_BYTES as i64 {
+        return Err(too_big_message(size as usize));
+    }
+    let (_filename, _mime_type, bytes) = fetch_attachment(&app, &state, email_id, &attachment_id).await?;
+    // The stored size can be stale, so check what actually arrived too.
+    if bytes.len() > MAX_PREVIEW_BYTES {
+        return Err(too_big_message(bytes.len()));
+    }
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
+/// Plain language, because the frontend renders command errors verbatim.
+fn too_big_message(bytes: usize) -> String {
+    format!(
+        "That file is too big to show here ({} MB). You can still open it with your computer's app.",
+        (bytes as f64 / 1024.0 / 1024.0).round() as i64
+    )
 }
 
 #[derive(Debug, Serialize)]
