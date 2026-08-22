@@ -1,6 +1,7 @@
 use crate::auth::{keyring_store, oauth};
 use crate::gmail::client::{extract_email_address, GmailClient};
 use crate::llm::{self, ModelStatus};
+use crate::meetings::{self, MeetingDto};
 use crate::search;
 use crate::triage::{self, TriageResult};
 use crate::unsubscribe::{self, UnsubscribeMethod};
@@ -2211,4 +2212,144 @@ pub async fn search(
         });
     }
     Ok(results)
+}
+
+// ---------------------------------------------------------------------------
+// Meetings
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize, Clone)]
+pub struct MeetingScanProgressEvent {
+    pub gmail_thread_id: String,
+    pub done: u32,
+    pub total: u32,
+    pub error: Option<String>,
+}
+
+/// Collects the threads whose meeting information is missing or out of date.
+///
+/// A thread is rescanned when its stored message count differs from what was scanned last
+/// time, which is what makes a meeting follow the conversation: a later message that moves
+/// the time, or finally supplies the link, gets picked up on the next scan.
+fn threads_needing_scan(
+    state: &State<'_, AppState>,
+    account_id: Option<i64>,
+) -> Result<Vec<meetings::ThreadToScan>, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT e.account_id,
+                    e.gmail_thread_id,
+                    a.email_address,
+                    MAX(e.id)    AS newest_email_id,
+                    COUNT(e.id)  AS message_count
+             FROM emails e
+             JOIN accounts a ON a.id = e.account_id
+             LEFT JOIN thread_scans ts
+                    ON ts.account_id = e.account_id
+                   AND ts.gmail_thread_id = e.gmail_thread_id
+             WHERE (?1 IS NULL OR e.account_id = ?1)
+             GROUP BY e.account_id, e.gmail_thread_id
+             HAVING ts.scanned_message_count IS NULL
+                 OR ts.scanned_message_count != COUNT(e.id)
+             ORDER BY MAX(e.received_at) DESC",
+        )
+        .map_err(|e| e.to_string())?;
+
+    let heads = stmt
+        .query_map(params![account_id], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+
+    let mut out = Vec::new();
+    for (acct, thread_id, user_email, newest_id, count) in heads {
+        let mut msg_stmt = conn
+            .prepare(
+                "SELECT sender, is_from_sent_folder, received_at, body_text
+                 FROM emails
+                 WHERE account_id = ?1 AND gmail_thread_id = ?2
+                 ORDER BY received_at ASC",
+            )
+            .map_err(|e| e.to_string())?;
+        let messages = msg_stmt
+            .query_map(params![acct, thread_id], |row| {
+                Ok(meetings::StoredMessage {
+                    sender: row.get(0)?,
+                    from_user: row.get::<_, i64>(1)? != 0,
+                    received_at: row.get(2)?,
+                    body_text: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                })
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+
+        out.push(meetings::ThreadToScan {
+            account_id: acct,
+            gmail_thread_id: thread_id,
+            user_email,
+            source_email_id: newest_id,
+            message_count: count,
+            messages,
+        });
+    }
+    Ok(out)
+}
+
+/// Scans every thread whose meeting data is stale. Like triage, this is an explicit,
+/// progress-streamed action rather than something that silently blocks sync: it is one
+/// on-device inference per changed thread.
+#[tauri::command]
+pub async fn scan_meetings(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    account_id: Option<i64>,
+) -> Result<u32, String> {
+    let handle = {
+        let slot = state.triage_llm.lock().map_err(|e| e.to_string())?;
+        slot.clone().ok_or("model not loaded - call load_model first")?
+    };
+
+    let threads = threads_needing_scan(&state, account_id)?;
+    let total = threads.len() as u32;
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+
+    for (i, thread) in threads.iter().enumerate() {
+        let outcome = meetings::scan_thread(&state.db, &handle, thread, &today).await;
+        let event = MeetingScanProgressEvent {
+            gmail_thread_id: thread.gmail_thread_id.clone(),
+            done: i as u32 + 1,
+            total,
+            error: outcome.err().map(|e| e.to_string()),
+        };
+        let _ = app.emit("meeting-scan-progress", event);
+    }
+    Ok(total)
+}
+
+/// Meetings starting in `[from, to)` - the range the visible calendar month covers.
+#[tauri::command]
+pub fn list_meetings(
+    state: State<'_, AppState>,
+    account_id: Option<i64>,
+    from: String,
+    to: String,
+) -> Result<Vec<MeetingDto>, String> {
+    meetings::list_meetings(&state.db, account_id, &from, &to)
+}
+
+/// Hides a meeting permanently. A later rescan of the same thread will not bring it back.
+#[tauri::command]
+pub fn dismiss_meeting(state: State<'_, AppState>, meeting_id: i64) -> Result<(), String> {
+    meetings::dismiss_meeting(&state.db, meeting_id)
 }

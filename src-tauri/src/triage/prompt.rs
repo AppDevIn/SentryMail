@@ -281,6 +281,75 @@ pub fn build_label_prompt(labels: &[(String, String)], input: &PromptInput) -> S
     )
 }
 
+/// One stored message in a thread, oldest-first, as the meeting scanner sees it.
+pub struct ThreadMessage<'a> {
+    pub sender: &'a str,
+    /// True when this message was sent by the user (from their Sent folder).
+    pub from_user: bool,
+    /// The message's own date, so the model can resolve "Thursday 3pm" correctly.
+    pub received_at: &'a str,
+    pub body_text: &'a str,
+}
+
+/// Only the tail of a thread is scanned: a meeting is agreed in the last few messages, and
+/// the whole prompt must fit the worker's 4096-token context or generation is refused outright.
+const MEETING_MAX_MESSAGES: usize = 6;
+const MEETING_MAX_CHARS_PER_MESSAGE: usize = 1200;
+
+const MEETING_INSTRUCTIONS: &str = r#"You are a private, fully on-device assistant inside an email client. Nothing you read leaves this device. Read the email thread below and decide whether it arranges a meeting or call involving the user.
+
+Set kind to exactly one of:
+- "confirmed": the thread contains a real joinable meeting link (Google Meet, Zoom, Teams, Webex, Whereby) AND a time.
+- "possible": no link, but the user AND the other person have BOTH agreed on a time. One side proposing a time is NOT enough - look for the other side accepting it.
+- "none": no meeting, or only a vague intention ("let's catch up sometime", "I'll send times later").
+
+Set has_meeting to false when kind is "none".
+
+title: a short phrase describing what the meeting is about, drawn from the whole thread's subject matter. Not the sender's name, not "Meeting".
+
+starts_at: the meeting's start as YYYY-MM-DDTHH:MM, in 24-hour time. Resolve relative dates ("Thursday", "tomorrow") against the date of the message that stated them, which is given for each message below. If you cannot determine a specific date and time, set kind to "none".
+
+duration_minutes: the stated duration, or 30 if not stated.
+
+join_url: the meeting link exactly as it appears in the thread, copied character for character. If several appear, use the one from the most recent message. Use null when there is no link.
+
+confidence: "high" only when both the time and the agreement are explicit.
+
+Respond with ONLY a single JSON object matching the required schema."#;
+
+/// Builds the thread-level meeting-extraction prompt.
+///
+/// This is deliberately thread-level, not message-level: "both sides agreed" is not visible
+/// in any single message. Each stored message still has its own quoted copy of the earlier
+/// ones stripped - those appear as their own entries here, so keeping them would repeat the
+/// thread N times and blow the context budget. What this adds over `build_triage_prompt` is
+/// the real back-and-forth across messages, with the user's own replies marked.
+pub fn build_meeting_prompt(thread: &[ThreadMessage], user_email: &str, today: &str) -> String {
+    let start = thread.len().saturating_sub(MEETING_MAX_MESSAGES);
+    let mut transcript = String::new();
+    for m in &thread[start..] {
+        let who = if m.from_user {
+            "FROM THE USER".to_string()
+        } else {
+            format!("FROM {}", m.sender)
+        };
+        let (newest, _) = strip_quoted_history(m.body_text);
+        transcript.push_str(&format!(
+            "--- {} | sent {} ---\n{}\n\n",
+            who,
+            m.received_at,
+            truncate_chars(&newest, MEETING_MAX_CHARS_PER_MESSAGE)
+        ));
+    }
+    format!(
+        "<start_of_turn>user\n{MEETING_INSTRUCTIONS}\n\n\
+         The user's own email address is: {}\n\
+         Today's date is: {}\n\n\
+         Thread (oldest first):\n{}<end_of_turn>\n<start_of_turn>model\n",
+        user_email, today, transcript
+    )
+}
+
 fn truncate_chars(s: &str, max_chars: usize) -> String {
     s.chars().take(max_chars).collect()
 }
@@ -393,6 +462,63 @@ mod tests {
         let (n, s) = strip_quoted_history(body);
         assert!(!s);
         assert_eq!(n, body);
+    }
+
+    fn tm<'a>(sender: &'a str, from_user: bool, at: &'a str, body: &'a str) -> ThreadMessage<'a> {
+        ThreadMessage { sender, from_user, received_at: at, body_text: body }
+    }
+
+    #[test]
+    fn meeting_prompt_marks_the_users_own_messages() {
+        let thread = vec![
+            tm("Alice <alice@x.com>", false, "2026-08-20", "Can we do Thursday 3pm?"),
+            tm("bob@example.com", true, "2026-08-20", "Thursday 3pm works for me."),
+        ];
+        let p = build_meeting_prompt(&thread, "bob@example.com", "2026-08-22");
+        assert!(p.contains("FROM THE USER"));
+        assert!(p.contains("FROM Alice <alice@x.com>"));
+        // Both sides must be visible - that is the whole point of scanning at thread level.
+        assert!(p.contains("Can we do Thursday 3pm?"));
+        assert!(p.contains("Thursday 3pm works for me."));
+        assert!(p.starts_with("<start_of_turn>user\n"));
+        assert!(p.ends_with("<start_of_turn>model\n"));
+    }
+
+    #[test]
+    fn meeting_prompt_anchors_relative_dates() {
+        let thread = vec![tm("a@x.com", false, "2026-08-20", "Thursday works")];
+        let p = build_meeting_prompt(&thread, "bob@example.com", "2026-08-22");
+        // Both today's date and each message's own date must be present, or "Thursday"
+        // cannot be resolved to a real calendar day.
+        assert!(p.contains("Today's date is: 2026-08-22"));
+        assert!(p.contains("sent 2026-08-20"));
+    }
+
+    #[test]
+    fn meeting_prompt_keeps_only_the_most_recent_messages() {
+        let bodies: Vec<String> = (0..10).map(|i| format!("message number {i}")).collect();
+        let thread: Vec<ThreadMessage> = bodies
+            .iter()
+            .map(|b| tm("a@x.com", false, "2026-08-20", b))
+            .collect();
+        let p = build_meeting_prompt(&thread, "bob@example.com", "2026-08-22");
+        // Oldest dropped, newest kept - a long thread must not blow the 4096-token context.
+        assert!(!p.contains("message number 0"));
+        assert!(!p.contains("message number 3"));
+        assert!(p.contains("message number 9"));
+    }
+
+    #[test]
+    fn meeting_prompt_strips_each_messages_quoted_copy() {
+        // Each stored message quotes the previous one; those appear as their own entries,
+        // so leaving the quotes in would repeat the thread and waste the context budget.
+        let thread = vec![
+            tm("a@x.com", false, "2026-08-20", "Original ask"),
+            tm("b@x.com", true, "2026-08-21", "Sure!\n\n> Original ask"),
+        ];
+        let p = build_meeting_prompt(&thread, "bob@example.com", "2026-08-22");
+        assert!(p.contains("Sure!"));
+        assert!(!p.contains("> Original ask"));
     }
 
     #[test]

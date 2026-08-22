@@ -3,6 +3,7 @@ mod commands;
 mod db;
 mod gmail;
 mod llm;
+mod meetings;
 mod search;
 mod triage;
 mod unsubscribe;
@@ -83,6 +84,9 @@ pub fn run() {
             commands::load_embedding_model,
             commands::embed_pending,
             commands::search,
+            commands::scan_meetings,
+            commands::list_meetings,
+            commands::dismiss_meeting,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

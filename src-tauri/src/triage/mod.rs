@@ -1,5 +1,5 @@
 mod prompt;
-pub use prompt::{build_label_prompt, build_reply_prompt, build_reply_prompt_with, build_summary_prompt, build_triage_prompt, PromptInput};
+pub use prompt::{build_label_prompt, build_meeting_prompt, build_reply_prompt, build_reply_prompt_with, build_summary_prompt, build_triage_prompt, PromptInput, ThreadMessage};
 
 use crate::llm::grammar::{REPLY_GBNF, REPLY_GRAMMAR_ROOT, SUMMARY_GBNF, SUMMARY_GRAMMAR_ROOT};
 use crate::llm::LlmHandle;

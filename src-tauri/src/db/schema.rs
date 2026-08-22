@@ -90,6 +90,39 @@ CREATE TABLE IF NOT EXISTS message_summaries (
     created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Records that a thread has been scanned for meetings at a given message count, whether or
+-- not one was found. Kept separate from `meetings` so a thread with no meeting is still
+-- remembered as scanned - otherwise every meeting-free thread would be re-scanned, at one
+-- on-device inference each, on every run.
+CREATE TABLE IF NOT EXISTS thread_scans (
+    account_id            INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    gmail_thread_id       TEXT NOT NULL,
+    scanned_message_count INTEGER NOT NULL,
+    last_scanned_at       TEXT NOT NULL DEFAULT (datetime('now')),
+    model_version         TEXT NOT NULL,
+    PRIMARY KEY (account_id, gmail_thread_id)
+);
+
+CREATE TABLE IF NOT EXISTS meetings (
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_id            INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    gmail_thread_id       TEXT NOT NULL,
+    source_email_id       INTEGER REFERENCES emails(id) ON DELETE SET NULL,
+    kind                  TEXT NOT NULL,
+    title                 TEXT NOT NULL,
+    starts_at             TEXT NOT NULL,
+    duration_minutes      INTEGER,
+    join_url              TEXT,
+    provider              TEXT,
+    confidence            TEXT NOT NULL,
+    dismissed_at          TEXT,
+    model_version         TEXT NOT NULL,
+    UNIQUE(account_id, gmail_thread_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_meetings_starts ON meetings(starts_at);
+CREATE INDEX IF NOT EXISTS idx_meetings_account ON meetings(account_id);
+
 CREATE TABLE IF NOT EXISTS email_embeddings (
     email_id      INTEGER PRIMARY KEY REFERENCES emails(id) ON DELETE CASCADE,
     embedding     BLOB NOT NULL,

@@ -23,3 +23,24 @@ hex ::= [0-9a-fA-F]
 string ::= "\"" char* "\""
 "#;
 pub const SUMMARY_GRAMMAR_ROOT: &str = "root";
+
+/// GBNF grammar for thread-level meeting extraction. Same one-line-rule-body caveat as the
+/// other grammars here.
+///
+/// `starts_at` is constrained to a literal ISO 8601 digit shape rather than a free string:
+/// a small on-device model will otherwise happily emit "next Thursday" or a malformed date,
+/// and a date we cannot parse is a calendar entry we cannot place. Making the shape
+/// unproducible is far more reliable than validating after the fact.
+pub const MEETING_GBNF: &str = r#"root ::= ( "{" ws "\"has_meeting\":" ws boolean "," ws "\"kind\":" ws kind "," ws "\"title\":" ws string "," ws "\"starts_at\":" ws starts-at "," ws "\"duration_minutes\":" ws duration "," ws "\"join_url\":" ws (string | "null") "," ws "\"confidence\":" ws confidence ws "}" )
+ws ::= [ \t\n]*
+boolean ::= "true" | "false"
+kind ::= "\"confirmed\"" | "\"possible\"" | "\"none\""
+confidence ::= "\"high\"" | "\"medium\"" | "\"low\""
+d ::= [0-9]
+starts-at ::= "\"" d d d d "-" d d "-" d d "T" d d ":" d d "\""
+duration ::= d | d d | d d d | d d d d
+char ::= [^"\\] | "\\" (["\\/bfnrt] | "u" hex hex hex hex)
+hex ::= [0-9a-fA-F]
+string ::= "\"" char* "\""
+"#;
+pub const MEETING_GRAMMAR_ROOT: &str = "root";
