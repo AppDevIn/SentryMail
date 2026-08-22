@@ -7,8 +7,11 @@
 //! One row per thread (`UNIQUE(account_id, gmail_thread_id)`), so re-scanning an updated thread
 //! refreshes the meeting in place while preserving the user's dismissal.
 
+mod prefilter;
 mod url;
 
+#[allow(unused_imports)]
+pub use prefilter::worth_scanning;
 #[allow(unused_imports)]
 pub use url::{validate_join_url, MeetingProvider};
 
@@ -86,6 +89,20 @@ pub async fn scan_thread(
             body_text: &m.body_text,
         })
         .collect();
+
+    // Skip the inference entirely when nothing in the thread even hints at scheduling.
+    // At seconds-to-tens-of-seconds per thread on CPU, this is the difference between a
+    // scan that finishes and one that does not.
+    let thread_text = thread
+        .messages
+        .iter()
+        .map(|m| m.body_text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    if !prefilter::worth_scanning(&thread_text) {
+        mark_scanned(db, thread)?;
+        return Ok(None);
+    }
 
     let prompt = build_meeting_prompt(&borrowed, &thread.user_email, today);
     // generate() defaults to the *triage* grammar - the meeting schema must be passed
