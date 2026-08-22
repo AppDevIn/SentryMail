@@ -79,6 +79,7 @@ pub fn run() {
             commands::apply_labels,
             commands::create_gmail_draft,
             commands::draft_reply,
+            commands::draft_message,
             commands::summarize_message,
             commands::unsubscribe_info,
             commands::unsubscribe_via_post,

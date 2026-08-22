@@ -1,7 +1,7 @@
 mod prompt;
-pub use prompt::{build_label_prompt, build_meeting_prompt, build_reply_prompt, build_reply_prompt_with, build_summary_prompt, build_triage_prompt, PromptInput, ThreadMessage};
+pub use prompt::{build_compose_prompt, build_label_prompt, build_meeting_prompt, build_reply_prompt, build_reply_prompt_with, build_summary_prompt, build_triage_prompt, ComposeInput, PromptInput, ThreadMessage};
 
-use crate::llm::grammar::{REPLY_GBNF, REPLY_GRAMMAR_ROOT, SUMMARY_GBNF, SUMMARY_GRAMMAR_ROOT};
+use crate::llm::grammar::{COMPOSE_GBNF, COMPOSE_GRAMMAR_ROOT, REPLY_GBNF, REPLY_GRAMMAR_ROOT, SUMMARY_GBNF, SUMMARY_GRAMMAR_ROOT};
 use crate::llm::LlmHandle;
 use rusqlite::{params, Connection};
 use serde::Deserialize;
@@ -145,6 +145,20 @@ pub async fn triage_email(
 #[derive(Debug, Deserialize)]
 struct RawReplyOutput {
     draft_reply: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawComposeOutput {
+    subject: String,
+    body: String,
+}
+
+/// A new-message draft from the on-device model (compose pane). Returned to the UI, never
+/// persisted - the user decides what to keep.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ComposeDraft {
+    pub subject: String,
+    pub body: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -341,6 +355,30 @@ pub async fn draft_reply(
         return Err("the model returned an empty draft; try again".to_string());
     }
     Ok(draft)
+}
+
+/// Drafts a brand-new message for the compose pane from the user's recipients, subject and
+/// instructions. Unlike `draft_reply` there is no stored email involved, so no risk check
+/// applies; the only inputs are what the user typed.
+pub async fn draft_message(llm: &LlmHandle, input: &ComposeInput<'_>) -> Result<ComposeDraft, String> {
+    if input.instructions.trim().is_empty() && input.subject.trim().is_empty() && input.previous_body.trim().is_empty() {
+        return Err("Add a subject or tell the model what the email should say first".to_string());
+    }
+    let prompt = build_compose_prompt(input);
+    let raw = llm.generate_with(prompt, 450, COMPOSE_GBNF, COMPOSE_GRAMMAR_ROOT).await?;
+    let parsed: RawComposeOutput = serde_json::from_str(&raw)
+        .map_err(|e| format!("the model returned an unreadable draft ({e}); try again"))?;
+    let body = normalize_draft(&parsed.body);
+    if body.trim().is_empty() {
+        return Err("the model returned an empty draft; try again".to_string());
+    }
+    // Keep the user's own subject when they wrote one; only fill a blank.
+    let subject = if input.subject.trim().is_empty() {
+        parsed.subject.trim().to_string()
+    } else {
+        input.subject.trim().to_string()
+    };
+    Ok(ComposeDraft { subject, body })
 }
 
 /// Small on-device models often emit a reply as one run-on line ("Hi A, thanks. ... Best

@@ -566,6 +566,22 @@ window.__TAURI_INTERNALS__ = {
         if (/short/i.test(instr)) return "Hi Marcus,\n\nReceived - nothing else needed, thanks.\n\nJordan";
         return "Hi Marcus,\n\nThanks for sending the countersigned copy over. Nothing else is needed from your side - we'll take it from here.\n\nBest,\nJordan";
       }
+      case "draft_message": {
+        await delay(1200);
+        const subjectIn = String(args.subject ?? "").trim();
+        const instr = String(args.instructions ?? "");
+        const to = String(args.to ?? "");
+        const local = to.split("@")[0] ?? "";
+        const first = local.split(/[._+-]/)[0] ?? "";
+        const greet = first ? `Hi ${first.charAt(0).toUpperCase()}${first.slice(1)},` : "Hello,";
+        if (!subjectIn && !instr.trim() && !String(args.previousBody ?? "").trim()) {
+          throw new Error("Add a subject or tell the model what the email should say first");
+        }
+        const body = /short/i.test(instr)
+          ? `${greet}\n\nQuick one - ${instr.replace(/\b(keep it |make it )?short(er)?\b[.,]?/i, "").trim() || "just checking in"}.\n\nThanks,\nJordan`
+          : `${greet}\n\nHope you're well. ${instr.trim() ? `I'm writing to ${instr.trim().replace(/\.$/, "")}.` : "I wanted to follow up on this."}\n\nLet me know if that works for you, and happy to adjust if not.\n\nBest,\nJordan`;
+        return { subject: subjectIn || (instr.trim() ? instr.trim().split(/\s+/).slice(0, 6).join(" ") : "Following up"), body };
+      }
       case "plugin:opener|open_url":
         console.info("[mock] open_url", args);
         return null;
