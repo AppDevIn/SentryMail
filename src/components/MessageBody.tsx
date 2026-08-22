@@ -3,12 +3,29 @@ import type { AttachmentDto, EmailDto, InlineImageDto, RemoteImageDto, SkippedIn
 import { api } from "../api";
 import { cleanUrl, formatSize, linkLabel, splitQuotedHistory } from "../format";
 
-/** Swaps `src="cid:…"` references for data URIs of the message's own inline images. */
-function inlineCidImages(html: string, images: InlineImageDto[]): string {
-  if (!images.length) return html;
+/**
+ * Swaps `src="cid:…"` references for data URIs of the message's own inline images.
+ *
+ * `settled` says the backend has finished telling us which inline images we get. After that,
+ * a cid we still cannot resolve is never going to load - it was too large to inline, its part
+ * failed to download, or the message references a part that is not there - so it is swapped
+ * for the same neutral placeholder a failed remote image gets. Left alone it renders as a
+ * broken-image glyph, which reads as "this app is broken" rather than "one picture is
+ * missing"; the note above the attachment chips explains the why, and the file is still
+ * reachable there.
+ */
+function inlineCidImages(html: string, images: InlineImageDto[], settled: boolean): string {
+  if (!images.length && !settled) return html;
   return html.replace(/(src\s*=\s*["']?)cid:([^"'\s>]+)/gi, (m, pre: string, cid: string) => {
-    const img = images.find((i) => i.content_id === cid || i.content_id === decodeURIComponent(cid));
-    return img ? `${pre}data:${img.mime_type};base64,${img.data_base64}` : m;
+    let decoded = cid;
+    try {
+      decoded = decodeURIComponent(cid);
+    } catch {
+      /* a malformed escape just means the raw form is the only one worth matching */
+    }
+    const img = images.find((i) => i.content_id === cid || i.content_id === decoded);
+    if (img) return `${pre}data:${img.mime_type};base64,${img.data_base64}`;
+    return settled ? `${pre}${MISSING_IMAGE}` : m;
   });
 }
 
@@ -653,6 +670,8 @@ export function MessageBody({ email, risk, compact = false, onOpenLink, onPrevie
   const useLight = lightCard ?? designed;
   const palette = appPalette.dark && useLight ? LIGHT_PALETTE : appPalette;
   const [skippedInline, setSkippedInline] = useState<SkippedInlineImageDto[]>([]);
+  /** True once we know which inline images we are getting, so unresolved cids can be settled. */
+  const [inlineSettled, setInlineSettled] = useState(false);
   // Remote images are never loaded until the user asks. Gated on this state rather than on
   // meta.remoteUrls, because rewriting the HTML reloads the frame and reports no URLs at all.
   const [imagesState, setImagesState] = useState<"blocked" | "loading" | "shown" | "failed">("blocked");
@@ -676,6 +695,7 @@ export function MessageBody({ email, risk, compact = false, onOpenLink, onPrevie
     setAttachments([]);
     setInlineImgs([]);
     setSkippedInline([]);
+    setInlineSettled(false);
     setAttachError(null);
     setImagesState("blocked");
     setRemoteImgs([]);
@@ -695,18 +715,26 @@ export function MessageBody({ email, risk, compact = false, onOpenLink, onPrevie
               setInlineImgs(res.images);
               setSkippedInline(res.skipped);
             })
-            .catch(() => {});
+            .catch(() => {})
+            .finally(() => {
+              if (!cancelled) setInlineSettled(true);
+            });
+        } else if (!cancelled) {
+          // No inline image parts to fetch, so any cid: in the body is already unresolvable.
+          setInlineSettled(true);
         }
       })
-      .catch(() => {});
+      .catch(() => {
+        if (!cancelled) setInlineSettled(true);
+      });
     return () => {
       cancelled = true;
     };
   }, [email.id, hasHtml, email.body_html]);
 
   const htmlWithImages = useMemo(
-    () => inlineRemoteImages(inlineCidImages(email.body_html ?? "", inlineImgs), remoteImgs),
-    [email.body_html, inlineImgs, remoteImgs],
+    () => inlineRemoteImages(inlineCidImages(email.body_html ?? "", inlineImgs, inlineSettled), remoteImgs),
+    [email.body_html, inlineImgs, inlineSettled, remoteImgs],
   );
   /** Fetches `urls`, merging over anything already loaded so a retry never drops a success. */
   const loadImages = async (urls: string[]) => {
