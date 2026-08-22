@@ -33,6 +33,16 @@ pub fn run() {
                 embed_llm: Mutex::new(None),
                 embed_model_status: Mutex::new(llm::ModelStatus::NotConfigured),
             });
+            // ADR 0005: the embedding model is small, so when its file is present it loads
+            // in the background at launch; the triage model stays an explicit choice.
+            let handle = app.handle().clone();
+            let model_present = llm::embedding_model_path(&handle).map(|p| p.exists()).unwrap_or(false);
+            if model_present {
+                let state = app.state::<AppState>();
+                if let Err(e) = commands::start_embed_worker(&handle, state.inner()) {
+                    eprintln!("embedding model auto-load failed: {e}");
+                }
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -69,7 +79,7 @@ pub fn run() {
             commands::embedding_model_status,
             commands::load_embedding_model,
             commands::embed_pending,
-            commands::semantic_search,
+            commands::search,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

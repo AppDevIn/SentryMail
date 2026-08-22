@@ -24,6 +24,10 @@ import "./App.css";
 const PAGE_SIZE = 100;
 /** Background sync cadence. Incremental (history API) syncs are cheap, so this can be short. */
 const AUTO_SYNC_MS = 5 * 60 * 1000;
+/** Search runs this long after the last keystroke (and immediately on Enter). ADR 0006. */
+const SEARCH_DEBOUNCE_MS = 200;
+/** Most results one search returns. ADR 0006. */
+const SEARCH_RESULT_CAP = 50;
 
 function App() {
   const [accounts, setAccounts] = useState<AccountDto[]>([]);
@@ -46,8 +50,15 @@ function App() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [searchResults, setSearchResults] = useState<SearchResultDto[] | null>(null);
+  // Search: `searchInput` is the box text; `searchQuery` is the query the current results are for.
+  // `searchResults === null` means "not searching"; `[]` means "searched, no hits".
+  const [searchInput, setSearchInput] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<SearchResultDto[] | null>(null);
+  const [searchLoading, setSearchLoading] = useState(false);
+  // Last request wins: every new search bumps this and stale responses are dropped.
+  const searchReq = useRef(0);
+  const searchTimer = useRef<number | null>(null);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const [syncProgress, setSyncProgress] = useState<SyncProgressEvent | null>(null);
   const [lastSyncedAt, setLastSyncedAt] = useState<Date | null>(null);
@@ -171,6 +182,82 @@ function App() {
       setBusy(false);
     }
   };
+
+  // --- Search (ADR 0004/0006): scoped to the current view, debounced as you type, last request wins.
+  // Deliberately not routed through withBusy: that would disable the input mid-keystroke.
+  const cancelPendingSearch = useCallback(() => {
+    if (searchTimer.current !== null) {
+      window.clearTimeout(searchTimer.current);
+      searchTimer.current = null;
+    }
+    searchReq.current += 1;
+  }, []);
+
+  /** Back to the normal list: empties the box and drops any in-flight or pending request. */
+  const clearSearch = useCallback(() => {
+    cancelPendingSearch();
+    setSearchInput("");
+    setSearchQuery("");
+    setSearchResults(null);
+    setSearchLoading(false);
+  }, [cancelPendingSearch]);
+
+  const runSearch = useCallback(
+    async (text: string) => {
+      const query = text.trim();
+      if (!query) {
+        cancelPendingSearch();
+        setSearchQuery("");
+        setSearchResults(null);
+        setSearchLoading(false);
+        return;
+      }
+      const id = ++searchReq.current;
+      setSearchLoading(true);
+      try {
+        const results = await api.search(
+          query,
+          { accountId: selectedAccountId ?? undefined, labelId: selectedLabelId, dangerOnly: folder === "quarantine" },
+          SEARCH_RESULT_CAP,
+        );
+        if (id !== searchReq.current) return; // a newer search superseded this one
+        setSearchResults(results);
+        setSearchQuery(query);
+      } catch (e) {
+        if (id === searchReq.current) setError(String(e));
+      } finally {
+        if (id === searchReq.current) setSearchLoading(false);
+      }
+    },
+    [cancelPendingSearch, selectedAccountId, selectedLabelId, folder],
+  );
+
+  const onSearchInput = useCallback(
+    (text: string) => {
+      setSearchInput(text);
+      if (searchTimer.current !== null) window.clearTimeout(searchTimer.current);
+      searchTimer.current = null;
+      if (!text.trim()) {
+        runSearch("");
+        return;
+      }
+      setSearchLoading(true);
+      searchTimer.current = window.setTimeout(() => {
+        searchTimer.current = null;
+        runSearch(text);
+      }, SEARCH_DEBOUNCE_MS);
+    },
+    [runSearch],
+  );
+
+  const onSearchSubmit = useCallback(() => {
+    if (searchTimer.current !== null) window.clearTimeout(searchTimer.current);
+    searchTimer.current = null;
+    runSearch(searchInput);
+  }, [runSearch, searchInput]);
+
+  // Drop a pending debounce if the list unmounts.
+  useEffect(() => () => cancelPendingSearch(), [cancelPendingSearch]);
 
   const setRead = useCallback(
     (emailId: number, isRead: boolean) => {
@@ -303,7 +390,7 @@ function App() {
       await api.removeAccount(accountId);
       setAccounts(await api.listAccounts());
       setSelectedEmailId(null);
-      setSearchResults(null);
+      clearSearch();
       if (selectedAccountId === accountId) setSelectedAccountId(null);
       else await refreshEmails(selectedAccountId);
     });
@@ -316,7 +403,7 @@ function App() {
         onSelectAccount={(id) => {
           setSelectedAccountId(id);
           setSelectedEmailId(null);
-          setSearchResults(null);
+          clearSearch();
         }}
         onAddAccount={doAddAccount}
         onRemoveAccount={doRemoveAccount}
@@ -326,7 +413,7 @@ function App() {
           setFolder(f);
           setSelectedLabelId(null);
           setSelectedEmailId(null);
-          setSearchResults(null);
+          clearSearch();
         }}
         labels={labels}
         selectedLabelId={selectedLabelId}
@@ -334,7 +421,7 @@ function App() {
           setSelectedLabelId(id);
           setFolder("inbox");
           setSelectedEmailId(null);
-          setSearchResults(null);
+          clearSearch();
         }}
         onSaveLabelSettings={async (labelId, description, autoApply) => {
           const updated = await api.setLabelSettings(labelId, description, autoApply);
@@ -446,16 +533,14 @@ function App() {
             onFilter={setFilter}
             onOpen={openEmail}
             search={{
-              enabled: embedModelStatus.state === "ready",
+              semanticEnabled: embedModelStatus.state === "ready",
+              input: searchInput,
               query: searchQuery,
               results: searchResults,
-              onSearch: (query) =>
-                withBusy(async () => {
-                  const results = await api.semanticSearch(query, selectedAccountId ?? undefined);
-                  setSearchResults(results);
-                  setSearchQuery(query);
-                }),
-              onClear: () => setSearchResults(null),
+              loading: searchLoading,
+              onInput: onSearchInput,
+              onSubmit: onSearchSubmit,
+              onClear: clearSearch,
             }}
             busy={busy}
             hasAccounts={accounts.length > 0}

@@ -5,3 +5,6 @@
 # Dependencies / build output
 node_modules/
 dist/
+
+# Per-machine direnv overrides
+.envrc.local

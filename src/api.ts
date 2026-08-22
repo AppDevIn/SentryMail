@@ -95,10 +95,16 @@ export const api = {
   loadEmbeddingModel: () => invoke<void>("load_embedding_model"),
   embedPending: (accountId?: number) =>
     invoke<number>("embed_pending", { accountId: accountId ?? null }),
-  semanticSearch: (query: string, accountId?: number, limit?: number) =>
-    invoke<SearchResultDto[]>("semantic_search", {
+  /**
+   * Hybrid (keyword + semantic when available) search over the current view's scope:
+   * the selected account (or all), the open label, and only DANGER mail in Quarantine.
+   */
+  search: (query: string, scope: { accountId?: number; labelId?: string | null; dangerOnly: boolean }, limit?: number) =>
+    invoke<SearchResultDto[]>("search", {
       query,
-      accountId: accountId ?? null,
+      accountId: scope.accountId ?? null,
+      labelId: scope.labelId ?? null,
+      dangerOnly: scope.dangerOnly,
       limit: limit ?? null,
     }),
 };

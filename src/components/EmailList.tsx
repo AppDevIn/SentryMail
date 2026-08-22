@@ -1,14 +1,43 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
+import type { ReactNode } from "react";
 import type { EmailDto, LabelDto, ListFilter, SearchResultDto, TriageResult } from "../types";
 import { PriorityDot, RiskPill } from "./Badge";
 import { RISK_NOTES, addressingFor, effectiveRisk, formatListTime, parseSender, previewLine, splitQuotedHistory } from "../format";
 
 interface SearchState {
-  enabled: boolean;
+  /** Embedding model is loaded, so results may include "related" (meaning) hits. */
+  semanticEnabled: boolean;
+  /** Current text in the search box. */
+  input: string;
+  /** The query the current `results` were computed for (shown in the banner). */
   query: string;
   results: SearchResultDto[] | null;
-  onSearch: (query: string) => void;
+  /** A search is pending (debounce) or in flight. */
+  loading: boolean;
+  onInput: (text: string) => void;
+  onSubmit: () => void;
   onClear: () => void;
+}
+
+// Snippet highlight markers from the backend (plain text, never HTML). See SearchResultDto.
+const MARK_START = "\uE000";
+const MARK_END = "\uE001";
+
+/** Turns a marker-delimited snippet into text with <mark> spans, without ever using innerHTML. */
+function renderSnippet(snippet: string): ReactNode[] {
+  const text = snippet.replace(/\s+/g, " ").trim();
+  const pieces = text.split(MARK_START);
+  const nodes: ReactNode[] = [pieces[0].split(MARK_END).join("")];
+  for (let i = 1; i < pieces.length; i++) {
+    const end = pieces[i].indexOf(MARK_END);
+    if (end === -1) {
+      nodes.push(pieces[i]); // unterminated marker: show as plain text
+      continue;
+    }
+    nodes.push(<mark key={i}>{pieces[i].slice(0, end)}</mark>);
+    nodes.push(pieces[i].slice(end + 1).split(MARK_END).join(""));
+  }
+  return nodes;
 }
 
 // Module-level so the scroll offset survives this component unmounting while a thread is open.
@@ -66,7 +95,6 @@ export function EmailList({
   onAddAccount,
   onSync,
 }: EmailListProps) {
-  const [query, setQuery] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
 
   // Restore the list's scroll offset when coming back from a thread. The offset is captured
@@ -99,21 +127,39 @@ export function EmailList({
             {flagged > 0 && <> · {flagged} FLAGGED</>}
           </span>
           <form
-            className="search-form"
+            className={`search-form ${search.loading || search.semanticEnabled ? "has-hint" : ""}`}
+            role="search"
             onSubmit={(e) => {
               e.preventDefault();
-              if (query.trim()) search.onSearch(query.trim());
+              search.onSubmit();
             }}
           >
             <input
               type="search"
               className="mono"
-              placeholder={search.enabled ? "SEARCH BY MEANING…" : "SEARCH MODEL NOT LOADED"}
-              value={query}
-              disabled={!search.enabled || busy}
-              onChange={(e) => setQuery(e.currentTarget.value)}
-              aria-label="Search inbox by meaning"
+              placeholder="SEARCH…"
+              value={search.input}
+              onChange={(e) => search.onInput(e.currentTarget.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  search.onClear();
+                  e.currentTarget.blur();
+                }
+              }}
+              aria-label={`Search ${title}`}
+              autoComplete="off"
+              spellCheck={false}
             />
+            {search.loading ? (
+              <span className="mono search-hint search-hint-loading sm-pulse" aria-live="polite">
+                SEARCHING…
+              </span>
+            ) : search.semanticEnabled ? (
+              <span className="mono search-hint search-hint-meaning" title="Search model loaded: results also include emails related by meaning">
+                MEANING
+              </span>
+            ) : null}
           </form>
         </div>
         <div className="chip-row" role="tablist" aria-label="Filter">
@@ -141,17 +187,11 @@ export function EmailList({
 
       {searching ? (
         <div className="search-banner">
-          <span className="mono">
-            {search.results!.length} {search.results!.length === 1 ? "RESULT" : "RESULTS"} FOR “{search.query}”
+          <span className="mono search-banner-text">
+            {search.results!.length} {search.results!.length === 1 ? "RESULT" : "RESULTS"} FOR “{search.query}” IN{" "}
+            {title.toUpperCase()}
           </span>
-          <button
-            type="button"
-            className="btn btn-mini mono"
-            onClick={() => {
-              setQuery("");
-              search.onClear();
-            }}
-          >
+          <button type="button" className="btn btn-mini mono" onClick={search.onClear}>
             CLEAR
           </button>
         </div>
@@ -190,30 +230,52 @@ export function EmailList({
         {searching && (
           <ul className="row-list">
             {search.results!.length === 0 && (
-              <li className="empty-state">
-                <p className="empty-copy">No matching emails.</p>
+              <li className="empty-state sm-fade">
+                <p className="mono search-empty">NO RESULTS FOR “{search.query}”</p>
+                <p className="empty-copy">
+                  {search.semanticEnabled
+                    ? "Nothing matched by keyword or meaning in this view."
+                    : "Try a different word, or check another folder or label."}
+                </p>
               </li>
             )}
             {search.results!.map((r) => {
               const triage = triageByEmail[r.email_id];
               const sender = parseSender(r.sender);
+              const risk = effectiveRisk(triage);
+              const note = risk ? RISK_NOTES[risk] : null;
+              const exact = r.matched.includes("keyword");
               return (
                 <li key={r.email_id}>
-                  <button type="button" className="row" data-risk={effectiveRisk(triage) ?? "none"} onClick={() => open(r.email_id)}>
+                  <button type="button" className="row" data-risk={risk ?? "none"} onClick={() => open(r.email_id)}>
                     <span className="row-rail" aria-hidden="true" />
                     <PriorityDot priority={triage?.priority ?? null} />
                     <span className="row-main">
                       <span className="row-top">
                         <span className="row-sender">{sender.name}</span>
+                        <span
+                          className={`mono search-tag ${exact ? "search-tag-exact" : "search-tag-related"}`}
+                          title={exact ? "Contains the words you typed" : "Related by meaning (no exact word match)"}
+                        >
+                          {exact ? "EXACT" : "RELATED"}
+                        </span>
+                        {r.thread_count > 1 && (
+                          <span className="mono search-tag" title={`${r.thread_count} messages in this conversation`}>
+                            {r.thread_count} IN THREAD
+                          </span>
+                        )}
                         <span className="mono row-time">{formatListTime(r.received_at)}</span>
                       </span>
                       <span className="row-subject">{r.subject || "(no subject)"}</span>
                       <span className="row-ai">
-                        <span className="row-summary">{r.snippet}</span>
+                        <span className="search-snippet">{renderSnippet(r.snippet)}</span>
                       </span>
-                      <span className="row-flags">
-                        <span className="mono row-note">SIMILARITY {r.score.toFixed(2)}</span>
-                      </span>
+                      {risk && note && (
+                        <span className="row-flags">
+                          <RiskPill risk={risk} />
+                          <span className="mono row-note">{note}</span>
+                        </span>
+                      )}
                     </span>
                   </button>
                 </li>

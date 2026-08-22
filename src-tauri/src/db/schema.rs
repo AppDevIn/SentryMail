@@ -149,5 +149,108 @@ pub fn run_migrations(conn: &Connection) -> rusqlite::Result<()> {
     add_column_if_missing(conn, "triage_results", "done_at", "done_at TEXT")?;
     // label_ids: JSON array of the message's Gmail label ids (e.g. ["INBOX","Label_12"]).
     add_column_if_missing(conn, "emails", "label_ids", "label_ids TEXT")?;
+    // attachment_names: space-joined attachment filenames, denormalised onto the email row
+    // so keyword search can index them without joining `attachments` (ADR 0002).
+    // Written by upsert_message; backfilled once here for rows stored before the column existed.
+    add_column_if_missing(conn, "emails", "attachment_names", "attachment_names TEXT")?;
+    conn.execute(
+        "UPDATE emails SET attachment_names = (
+            SELECT group_concat(filename, ' ') FROM attachments a WHERE a.email_id = emails.id
+         )
+         WHERE attachment_names IS NULL
+           AND EXISTS (SELECT 1 FROM attachments a WHERE a.email_id = emails.id)",
+        [],
+    )?;
+    create_fts_index(conn)?;
     Ok(())
+}
+
+/// External-content FTS5 index over `emails`, kept in step by triggers so no write path
+/// has to know it exists (ADR 0002). Runs a one-time `rebuild` when the table is first
+/// created so rows that predate the index are searchable.
+fn create_fts_index(conn: &Connection) -> rusqlite::Result<()> {
+    let fts_exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'emails_fts')",
+        [],
+        |row| row.get(0),
+    )?;
+    conn.execute_batch(FTS_SCHEMA)?;
+    if !fts_exists {
+        conn.execute("INSERT INTO emails_fts(emails_fts) VALUES('rebuild')", [])?;
+    }
+    Ok(())
+}
+
+/// Column order here is what `bm25()` weights refer to (see search::keyword).
+const FTS_SCHEMA: &str = r#"
+CREATE VIRTUAL TABLE IF NOT EXISTS emails_fts USING fts5(
+    subject, body_text, sender, to_addrs, cc_addrs, attachment_names,
+    content='emails', content_rowid='id',
+    tokenize='unicode61 remove_diacritics 2'
+);
+
+CREATE TRIGGER IF NOT EXISTS emails_ai AFTER INSERT ON emails BEGIN
+    INSERT INTO emails_fts(rowid, subject, body_text, sender, to_addrs, cc_addrs, attachment_names)
+    VALUES (new.id, new.subject, new.body_text, new.sender, new.to_addrs, new.cc_addrs, new.attachment_names);
+END;
+
+CREATE TRIGGER IF NOT EXISTS emails_ad AFTER DELETE ON emails BEGIN
+    INSERT INTO emails_fts(emails_fts, rowid, subject, body_text, sender, to_addrs, cc_addrs, attachment_names)
+    VALUES ('delete', old.id, old.subject, old.body_text, old.sender, old.to_addrs, old.cc_addrs, old.attachment_names);
+END;
+
+CREATE TRIGGER IF NOT EXISTS emails_au AFTER UPDATE OF subject, body_text, sender, to_addrs, cc_addrs, attachment_names ON emails BEGIN
+    INSERT INTO emails_fts(emails_fts, rowid, subject, body_text, sender, to_addrs, cc_addrs, attachment_names)
+    VALUES ('delete', old.id, old.subject, old.body_text, old.sender, old.to_addrs, old.cc_addrs, old.attachment_names);
+    INSERT INTO emails_fts(rowid, subject, body_text, sender, to_addrs, cc_addrs, attachment_names)
+    VALUES (new.id, new.subject, new.body_text, new.sender, new.to_addrs, new.cc_addrs, new.attachment_names);
+END;
+"#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn migrations_are_idempotent_and_create_fts_index() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+        run_migrations(&conn).unwrap();
+        let fts: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name IN ('emails_fts', 'emails_ai', 'emails_ad', 'emails_au')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(fts, 4);
+    }
+
+    #[test]
+    fn migration_backfills_attachment_names_and_rebuilds_index() {
+        // Simulate a pre-FTS database: base schema plus rows, then run the full migration.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        conn.execute("INSERT INTO accounts (id, email_address) VALUES (1, 'me@example.com')", []).unwrap();
+        conn.execute(
+            "INSERT INTO emails (id, account_id, gmail_message_id, gmail_thread_id, sender, subject, body_text, received_at)
+             VALUES (7, 1, 'm7', 't7', 'Ann <ann@example.com>', 'Quarterly report', 'See attached', '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO attachments (email_id, attachment_id, filename, mime_type) VALUES (7, 'a1', 'budget.xlsx', 'application/x')",
+            [],
+        )
+        .unwrap();
+        run_migrations(&conn).unwrap();
+        let names: String = conn
+            .query_row("SELECT attachment_names FROM emails WHERE id = 7", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(names, "budget.xlsx");
+        let hits: i64 = conn
+            .query_row("SELECT COUNT(*) FROM emails_fts WHERE emails_fts MATCH '\"budget\"'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(hits, 1);
+    }
 }

@@ -87,14 +87,27 @@ export interface UnsubscribeInfo {
   unsubscribed_at: string | null;
 }
 
+/** Which ranking sources found a search hit (ADR 0003/0006). */
+export type SearchMatchSource = "keyword" | "semantic";
+
+/** One specific message that matched a search, with its thread context (ADR 0007). */
 export interface SearchResultDto {
   email_id: number;
   account_id: number;
+  gmail_thread_id: string;
+  /** Messages in this conversation; shown as an "n in thread" tag when > 1. */
+  thread_count: number;
   sender: string;
   subject: string;
+  /**
+   * Plain-text snippet. Keyword-matched terms are wrapped in U+E000 (start) / U+E001 (end)
+   * marker characters; the UI turns those into <mark> spans. Semantic-only hits carry no markers.
+   */
   snippet: string;
   received_at: string;
+  /** Fused RRF score; only meaningful relative to other rows of the same response. */
   score: number;
+  matched: SearchMatchSource[];
 }
 
 export interface EmbedProgressEvent {

@@ -379,21 +379,83 @@ window.__TAURI_INTERNALS__ = {
       case "plugin:opener|open_url":
         console.info("[mock] open_url", args);
         return null;
-      case "semantic_search": {
-        await delay(300);
-        const q = String(args.query ?? "").toLowerCase();
-        const hits: SearchResultDto[] = emails
-          .filter((e) => (e.subject + e.body_text).toLowerCase().includes(q.split(" ")[0] ?? ""))
-          .map((e, i) => ({
-            email_id: e.id,
-            account_id: e.account_id,
-            sender: e.sender,
-            subject: e.subject,
-            snippet: e.body_text.slice(0, 120),
-            received_at: e.received_at,
-            score: 0.9 - i * 0.07,
-          }));
-        return hits;
+      case "search": {
+        await delay(150);
+        const q = String(args.query ?? "").trim().toLowerCase();
+        if (!q) return [];
+        const accountId = (args.accountId as number | null) ?? null;
+        const labelId = (args.labelId as string | null) ?? null;
+        const dangerOnly = !!args.dangerOnly;
+        const limit = Math.min((args.limit as number | null) ?? 50, 50);
+        const terms = q.split(/\s+/).filter(Boolean);
+        const effectiveRisk = (id: number) => {
+          const t = triage[id];
+          return t ? t.user_risk ?? t.risk : null;
+        };
+        // Scope follows the current view (ADR 0004): account, label, Quarantine = danger only.
+        const scoped = emails.filter(
+          (e) =>
+            (accountId === null || e.account_id === accountId) &&
+            (labelId === null || e.label_ids.includes(labelId)) &&
+            (!dangerOnly || effectiveRisk(e.id) === "danger"),
+        );
+        const threadCount = (e: EmailDto) =>
+          emails.filter((x) => x.account_id === e.account_id && x.gmail_thread_id === e.gmail_thread_id).length;
+        const escapeRe = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const termRe = new RegExp([...terms].sort((a, b) => b.length - a.length).map(escapeRe).join("|"), "gi");
+        // FTS5-style snippet: ~160 chars around the first hit, matched terms wrapped in U+E000/U+E001.
+        const snippetFor = (e: EmailDto) => {
+          const body = e.body_text.replace(/\s+/g, " ").trim();
+          const hay = body.toLowerCase();
+          let first = -1;
+          for (const t of terms) {
+            const at = hay.indexOf(t);
+            if (at !== -1 && (first === -1 || at < first)) first = at;
+          }
+          // Window of ~160 chars around the first hit, snapped to word boundaries.
+          let start = first === -1 ? 0 : Math.max(0, first - 60);
+          if (start > 0) start = body.lastIndexOf(" ", start) + 1;
+          let end = Math.min(body.length, start + 160);
+          if (end < body.length) end = body.lastIndexOf(" ", end);
+          const frag = (start > 0 ? "…" : "") + body.slice(start, end) + (end < body.length ? "…" : "");
+          return frag.replace(termRe, (m) => `\uE000${m}\uE001`);
+        };
+        const keywordHits = scoped.filter((e) => {
+          const hay = `${e.subject} ${e.body_text} ${e.sender}`.toLowerCase();
+          return terms.every((t) => hay.includes(t));
+        });
+        const hits: SearchResultDto[] = keywordHits.map((e, i) => ({
+          email_id: e.id,
+          account_id: e.account_id,
+          gmail_thread_id: e.gmail_thread_id,
+          thread_count: threadCount(e),
+          sender: e.sender,
+          subject: e.subject,
+          snippet: snippetFor(e),
+          received_at: e.received_at,
+          score: 1 / (60 + i + 1),
+          matched: ["keyword"],
+        }));
+        // Demo only: a longer query that found something also surfaces one "related by meaning" hit
+        // so the RELATED tag is visible (a real nonsense query yields nothing - ADR 0006 similarity floor).
+        if (q.length >= 4 && keywordHits.length > 0) {
+          const related = scoped.find((e) => !keywordHits.includes(e));
+          if (related) {
+            hits.push({
+              email_id: related.id,
+              account_id: related.account_id,
+              gmail_thread_id: related.gmail_thread_id,
+              thread_count: threadCount(related),
+              sender: related.sender,
+              subject: related.subject,
+              snippet: related.body_text.replace(/\s+/g, " ").trim().slice(0, 160),
+              received_at: related.received_at,
+              score: 1 / (60 + hits.length + 1),
+              matched: ["semantic"],
+            });
+          }
+        }
+        return hits.slice(0, limit);
       }
       case "sync_now":
         await delay(500);

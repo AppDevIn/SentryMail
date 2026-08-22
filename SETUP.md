@@ -35,12 +35,30 @@ for the equivalent toolchain; `cmake` is still required everywhere for the embed
 
 ## 2. Google OAuth client (for Gmail sync)
 
-Create a Google Cloud OAuth 2.0 **Desktop app** client, then save its credentials to
-`<app_config_dir>/google_oauth_client.json`:
+Create a Google Cloud OAuth 2.0 **Desktop app** client (or get the team's existing one -
+your Google account must be listed as a **Test user** on its consent screen while it is in
+Testing mode). The app reads the credentials from, in order:
 
-```json
-{ "client_id": "...", "client_secret": "..." }
+1. `GOOGLE_OAUTH_CLIENT_ID` + `GOOGLE_OAUTH_CLIENT_SECRET` environment variables
+2. `<app_config_dir>/google_oauth_client.json`:
+   ```json
+   { "client_id": "...", "client_secret": "..." }
+   ```
+
+**Recommended: 1Password + direnv** (no secret files on disk, shareable via a team vault):
+
+```sh
+brew install --cask 1password-cli   # then 1Password app > Settings > Developer > Integrate with 1Password CLI
+brew install direnv jq              # add `eval "$(direnv hook zsh)"` to ~/.zshrc if not present
+scripts/op-store-google-oauth.sh ~/Downloads/client_secret_*.json [vault]   # one-time, creates the item
+direnv allow                        # in the repo root; .envrc reads the item via op://
+npm run tauri dev
 ```
+
+The 1Password item is `SentryMail Google OAuth` in vault `Private` by default; override with
+`SENTRYMAIL_OP_VAULT` / `SENTRYMAIL_OP_ITEM` (e.g. in `~/.zshrc` or a gitignored
+`.envrc.local`). If a teammate already created the item in a shared vault, skip the
+script and just set `SENTRYMAIL_OP_VAULT` to that vault.
 
 ## 3. Local Gemma model file
 
