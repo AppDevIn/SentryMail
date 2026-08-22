@@ -2902,3 +2902,369 @@ select:focus-visible {
   background: transparent;
   border-radius: 0;
 }
+
+/* ======================================================================
+   Voice: dictation buttons, read-aloud, the floating command dock
+   ====================================================================== */
+
+.dictate {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.dictate-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  padding: 0 14px;
+  border-radius: var(--r-control);
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 13.5px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+
+.dictate-btn svg {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+}
+
+.dictate-btn:hover:not(:disabled) {
+  background: var(--surface-overlay);
+  border-color: var(--accent);
+  color: var(--text-heading);
+}
+
+.dictate-btn:disabled {
+  opacity: 0.45;
+}
+
+.dictate.is-listening .dictate-btn {
+  background: var(--danger-bg);
+  border-color: var(--danger-border);
+  color: var(--danger-fg);
+}
+
+.dictate-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--danger-dot);
+}
+
+.dictate-btn-compact {
+  height: 28px;
+  width: 28px;
+  padding: 0;
+  justify-content: center;
+  border-radius: 6px;
+}
+
+.dictate-btn-compact svg {
+  width: 15px;
+  height: 15px;
+}
+
+.dictate-live {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+.dictate-live-label {
+  flex: 0 0 auto;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--danger-fg);
+}
+
+.dictate-interim {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-style: italic;
+  color: var(--text-2);
+}
+
+.dictate-error {
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--danger-fg);
+}
+
+/* reply box: the mic sits in the action row; the live transcript runs under the textarea */
+.draft-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.draft-editor.is-dictating textarea {
+  border-color: var(--danger-border);
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.draft-dictation-bar {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 8px 14px;
+  border: 1px solid var(--danger-border);
+  border-top: 0;
+  border-radius: 0 0 8px 8px;
+  background: var(--danger-tint);
+  font-size: 13px;
+}
+
+.draft-dictation-bar .dictate-interim {
+  white-space: normal;
+  overflow: visible;
+}
+
+.draft-dictate .dictate-btn {
+  height: 34px;
+}
+
+/* AI instructions input: compact mic at the right edge */
+.guidance .dictate-btn-compact {
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-2);
+}
+
+.guidance .dictate-btn-compact:hover:not(:disabled) {
+  background: var(--surface-overlay);
+  border-color: var(--border-strong);
+}
+
+/* search box: mic inside the field, left of the MEANING / SEARCHING hint */
+.search-form.has-mic input {
+  padding-right: 40px;
+}
+
+.search-form.has-mic.has-hint input {
+  padding-right: 124px;
+}
+
+.search-form .search-dictate {
+  position: absolute;
+  right: 5px;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.search-form.has-hint .search-dictate {
+  right: 88px;
+}
+
+.search-form .search-dictate .dictate-btn-compact {
+  height: 24px;
+  width: 24px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--text-2);
+}
+
+.search-form .search-dictate .dictate-btn-compact:hover:not(:disabled) {
+  background: var(--surface-overlay);
+  color: var(--text-heading);
+}
+
+.search-form .search-dictate.is-listening .dictate-btn-compact {
+  background: var(--danger-bg);
+  color: var(--danger-fg);
+}
+
+/* toolbar read-aloud */
+.read-aloud-btn.is-speaking {
+  color: var(--accent-strong);
+  background: var(--accent-bg);
+}
+
+/* floating command dock (bottom-right of the content pane) */
+.content {
+  position: relative;
+}
+
+.voice-dock {
+  position: absolute;
+  right: 24px;
+  bottom: 22px;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 10px;
+  pointer-events: none;
+}
+
+.voice-dock > * {
+  pointer-events: auto;
+}
+
+.voice-dock-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  height: 48px;
+  padding: 0 18px 0 14px;
+  border-radius: 24px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface-overlay);
+  color: var(--text-heading);
+  font-size: 14.5px;
+  font-weight: 600;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.28);
+  transition: background 0.12s ease, border-color 0.12s ease, transform 0.12s ease;
+}
+
+.voice-dock-btn svg {
+  flex: 0 0 auto;
+}
+
+.voice-dock-btn:hover {
+  border-color: var(--accent);
+  transform: translateY(-1px);
+}
+
+.voice-dock-btn.is-listening {
+  background: var(--danger-bg);
+  border-color: var(--danger-border);
+  color: var(--danger-fg);
+  animation: voice-ring 1.4s ease-out infinite;
+}
+
+@keyframes voice-ring {
+  0% {
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.28), 0 0 0 0 var(--danger-border);
+  }
+  100% {
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.28), 0 0 0 14px transparent;
+  }
+}
+
+.voice-toast {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-width: 360px;
+  padding: 10px 14px;
+  border-radius: var(--r-card);
+  border: 1px solid var(--border-strong);
+  background: var(--surface-overlay);
+  color: var(--text);
+  font-size: 13.5px;
+  line-height: 1.5;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.22);
+}
+
+.voice-toast.is-warn {
+  border-color: var(--caution-border);
+}
+
+.voice-toast.is-busy {
+  border-color: var(--accent);
+}
+
+.voice-toast.is-busy .voice-toast-body {
+  color: var(--accent-strong);
+  animation: sm-pulse 1.2s ease-in-out infinite;
+}
+
+.voice-toast-title {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-2);
+}
+
+.voice-toast-body {
+  color: var(--text-heading);
+}
+
+/* settings: voice section */
+.voice-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.voice-settings .settings-state + .settings-state {
+  margin-left: 10px;
+}
+
+.voice-settings-row {
+  align-items: center;
+  padding-left: 0;
+}
+
+.settings-subname {
+  font-weight: 500;
+  font-size: 13.5px;
+  color: var(--text);
+}
+
+.voice-select {
+  max-width: 260px;
+  padding: 7px 10px;
+  border-radius: var(--r-control);
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 13px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .voice-dock-btn.is-listening {
+    animation: none;
+  }
+}
+
+/* a denied/missing mic in the search box: explain in a small card under the field */
+.search-form .search-dictate .dictate-error {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 5;
+  width: 300px;
+  padding: 8px 12px;
+  border-radius: var(--r-control);
+  border: 1px solid var(--caution-border);
+  background: var(--surface-overlay);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 12.5px;
+  letter-spacing: 0;
+  text-align: left;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.22);
+}
+
+/* reply box: the mic button sits in the action row; an error takes a full line under the buttons */
+.draft-actions .draft-dictate {
+  display: contents;
+}
+
+.draft-actions .dictate-error {
+  flex: 1 1 100%;
+  order: 10;
+}
+
+/* the search box's error card must float over the list rows below the header */
+.inbox-header {
+  position: relative;
+  z-index: 3;
+}

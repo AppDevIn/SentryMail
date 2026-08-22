@@ -3,6 +3,8 @@ import type { ReactNode } from "react";
 import type { ApiFolder, EmailDto, LabelDto, ListFilter, SearchResultDto, TriageResult } from "../types";
 import { RiskPill } from "./Badge";
 import { RISK_NOTES, addressingFor, effectiveRisk, formatListTime, parseSender, previewLine, splitQuotedHistory } from "../format";
+import { DictateButton } from "./VoiceControls";
+import { appendDictation } from "../voice";
 
 interface SearchState {
   /** Embedding model is loaded, so results may include "related" (meaning) hits. */
@@ -141,7 +143,7 @@ export function EmailList({
           </span>
         </div>
         <form
-          className="search-form"
+          className="search-form has-mic"
           role="search"
           onSubmit={(e) => {
             e.preventDefault();
@@ -173,6 +175,17 @@ export function EmailList({
               meaning
             </span>
           ) : null}
+          <DictateButton
+            compact
+            className="search-dictate"
+            label="Dictate a search"
+            showStatus={false}
+            onText={(piece) => {
+              // Spoken searches are short phrases; the debounce in the app runs the query.
+              const next = appendDictation(search.input, piece).replace(/[.!?]+$/, "");
+              search.onInput(next);
+            }}
+          />
         </form>
         <div className="tab-row" role="tablist" aria-label="Filter">
           {filters.map(([value, label]) => (

@@ -1681,6 +1681,20 @@ pub async fn summarize_message(
     triage::summarize_message(&state.db, handle.as_ref(), &sender, &text, allow_generate).await
 }
 
+/// Maps a spoken phrase the frontend couldn't place to a voice intent, with the on-device model.
+#[tauri::command]
+pub async fn interpret_voice_command(
+    state: State<'_, AppState>,
+    transcript: String,
+    email_open: bool,
+) -> Result<crate::voice::VoiceIntent, String> {
+    let handle = {
+        let llm_slot = state.triage_llm.lock().map_err(|e| e.to_string())?;
+        llm_slot.clone().ok_or("model not loaded - call load_model first")?
+    };
+    crate::voice::interpret(&handle, &transcript, email_open).await
+}
+
 /// Drafts a reply on demand with the on-device model (for emails triage didn't draft for).
 #[tauri::command]
 pub async fn draft_reply(

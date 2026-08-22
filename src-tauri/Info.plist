@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Voice features: dictation into replies/search and spoken commands use the microphone and
+       the system speech recognizer. macOS refuses (and kills) apps that touch these without a
+       usage description, so these keys must ship in every build, including `tauri dev`. -->
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Sentry Mail uses the microphone so you can dictate replies and searches, and give spoken commands.</string>
+  <key>NSSpeechRecognitionUsageDescription</key>
+  <string>Sentry Mail uses speech recognition to turn what you say into text for replies, searches, and commands.</string>
+</dict>
+</plist>

@@ -1,6 +1,19 @@
 import { useEffect, useState } from "react";
 import type { ModelStatus } from "../types";
 import { currentTheme, setTheme as persistTheme } from "../theme";
+import {
+  RATE_VALUES,
+  dictationSupported,
+  setVoiceSettings,
+  speak,
+  speechSupported,
+  stopSpeaking,
+  useSpeaking,
+  useVoiceSettings,
+  useVoices,
+  type SpeakingRate,
+} from "../voice";
+import { SpeakerIcon, StopIcon } from "./icons";
 
 interface SettingsPanelProps {
   open: boolean;
@@ -28,6 +41,92 @@ function describe(status: ModelStatus): { label: string; detail: string } {
     case "failed":
       return { label: "Failed", detail: status.message };
   }
+}
+
+const RATE_LABELS: Record<SpeakingRate, string> = { slower: "SLOWER", normal: "NORMAL", faster: "FASTER" };
+const TEST_SENTENCE = "Hello. This is how Sentry Mail will read your email out loud. You can make me slower or faster.";
+
+/** Voice: dictation + read-aloud availability, speaking speed, which voice. */
+function VoiceSection() {
+  const settings = useVoiceSettings();
+  const voices = useVoices();
+  const speaking = useSpeaking();
+  const canDictate = dictationSupported();
+  const canSpeak = speechSupported();
+  return (
+    <section className="settings-section voice-settings">
+      <div className="settings-row">
+        <div>
+          <div className="settings-name">Voice</div>
+          <div className="settings-detail">
+            Speak instead of typing (the microphone button next to the reply box and search), hear any email read
+            out loud, and control the app with spoken commands from the Voice button.
+            <span className={`mono settings-state ${canDictate ? "is-accent" : ""}`}>DICTATION {canDictate ? "ON" : "UNAVAILABLE"}</span>
+            <span className={`mono settings-state ${canSpeak ? "is-accent" : ""}`}>READ ALOUD {canSpeak ? "ON" : "UNAVAILABLE"}</span>
+          </div>
+          <div className="settings-hint">
+            {canDictate
+              ? "Dictation uses the speech recognition built into your Mac. The first time, macOS asks to allow the microphone and speech recognition for Sentry Mail."
+              : "This window can't turn speech into text. Read aloud and the on-screen controls still work."}
+          </div>
+        </div>
+      </div>
+      {canSpeak && (
+        <div className="settings-row voice-settings-row">
+          <div>
+            <div className="settings-subname">Speaking speed</div>
+            <div className="settings-hint">Slower is easier to follow for long emails.</div>
+          </div>
+          <div className="settings-actions theme-picker" role="radiogroup" aria-label="Speaking speed">
+            {(Object.keys(RATE_VALUES) as SpeakingRate[]).map((r) => (
+              <button
+                key={r}
+                type="button"
+                role="radio"
+                aria-checked={settings.rate === r}
+                className={`btn btn-mini mono ${settings.rate === r ? "is-selected" : ""}`}
+                onClick={() => setVoiceSettings({ rate: r })}
+              >
+                {RATE_LABELS[r]}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+      {canSpeak && (
+        <div className="settings-row voice-settings-row">
+          <div>
+            <div className="settings-subname">Voice</div>
+            <div className="settings-hint">{voices.length > 0 ? "Voices installed on this Mac." : "Loading the voices installed on this Mac…"}</div>
+          </div>
+          <div className="settings-actions">
+            <select
+              className="voice-select"
+              aria-label="Voice"
+              value={settings.voiceURI ?? ""}
+              onChange={(e) => setVoiceSettings({ voiceURI: e.currentTarget.value || null })}
+            >
+              <option value="">System default</option>
+              {voices.map((v) => (
+                <option key={v.voiceURI} value={v.voiceURI}>
+                  {v.name} ({v.lang})
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              className="btn"
+              onClick={() => (speaking ? stopSpeaking() : speak(TEST_SENTENCE))}
+              title="Hear a sample with the current speed and voice"
+            >
+              {speaking ? <StopIcon /> : <SpeakerIcon />}
+              {speaking ? "Stop" : "Test"}
+            </button>
+          </div>
+        </div>
+      )}
+    </section>
+  );
 }
 
 /** Where the machinery lives: model on/off, search index, sync. Out of the main UI by design. */
@@ -94,6 +193,8 @@ export function SettingsPanel({
             </div>
           </div>
         </section>
+
+        <VoiceSection />
 
         <section className="settings-section">
           <div className="settings-row">

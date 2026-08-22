@@ -9,6 +9,7 @@ mod search;
 mod threat;
 mod triage;
 mod unsubscribe;
+mod voice;
 
 use std::sync::Mutex;
 use tauri::Manager;
@@ -80,6 +81,7 @@ pub fn run() {
             commands::create_gmail_draft,
             commands::draft_reply,
             commands::summarize_message,
+            commands::interpret_voice_command,
             commands::unsubscribe_info,
             commands::unsubscribe_via_post,
             commands::unsubscribe_open_browser,

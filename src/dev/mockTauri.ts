@@ -553,6 +553,14 @@ window.__TAURI_INTERNALS__ = {
       case "create_gmail_draft":
         await delay(args.send ? 700 : 400);
         return "draft-fixture";
+      case "interpret_voice_command": {
+        // Fixture stand-in for the model: a couple of canned meanings so the fallback path can be exercised.
+        const text = String(args.transcript ?? "").toLowerCase();
+        await new Promise((r) => setTimeout(r, 600));
+        if (/\b(tired|eyes|can't see|cannot see)\b/.test(text)) return { intent: "read", query: "" };
+        if (/\b(bank|dana|invoice)\b/.test(text)) return { intent: "search", query: text.match(/\b(bank|dana|invoice)\w*/)?.[0] ?? "" };
+        return { intent: "unknown", query: "" };
+      }
       case "summarize_message": {
         if (!args.allowGenerate) return null;
         await delay(500);
