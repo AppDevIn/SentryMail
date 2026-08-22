@@ -120,6 +120,20 @@ In the app: **Add account** (opens your browser for Google sign-in) → **Sync n
 meaning rather than exact keywords. Emails with a `List-Unsubscribe` header show an
 **Unsubscribe** control in the detail pane.
 
+## Network destinations
+
+Email content is never sent anywhere for analysis. The app contacts exactly three kinds of host:
+
+1. **Google's Gmail API** - sync, label changes and draft creation, for accounts you connect.
+2. **The one-click unsubscribe target**, only when you explicitly confirm an unsubscribe.
+3. **Three public phishing-URL feeds**, when you press *Update feeds* in Settings:
+   `data.phishtank.com`, `openphish.com` and `urlhaus.abuse.ch`.
+
+The feeds are downloaded **whole** and matched locally against your mail. That is deliberate: a
+per-URL reputation lookup would tell a third party who you correspond with and what they sent
+you. Downloading the entire list reveals only that somebody fetched a public file - nothing
+about your mailbox. No email content, address or URL from your mail ever leaves the device.
+
 ## Where this app keeps state outside the repo
 
 Nothing below is in the repository, so cloning or deleting the checkout neither provides nor
