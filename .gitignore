@@ -9,3 +9,11 @@ dist/
 # Per-machine direnv overrides
 .envrc.local
 .claude/worktrees/
+
+# Nix / direnv
+.direnv/
+result
+result-*
+
+# Rust build output
+src-tauri/target/
